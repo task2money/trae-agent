@@ -4,7 +4,7 @@ import os from 'os';
 import YAML from 'yaml';
 import { resolveAgentConfigFromEnv } from './featureParamsEnvToYaml.mjs';
 
-import { resolveAgentConfigFromEnv } from './featureParamsEnvToYaml.mjs';
+import { materializeAgentConfigFile } from './featureParamsEnvToYaml.mjs';
 import { appendOutboundReqLog } from './outboundReqLog.mjs';
 import {
   newLayerId,
@@ -16,7 +16,7 @@ import {
   LAYER_ID_RE,
   repoDirNameFromUrl,
 } from './layerFs.mjs';
-import { layersRoot } from './paths.mjs';
+import { configFilePath, layersRoot } from './paths.mjs';
 import {
   appendExecStream,
   resetExecStream,
