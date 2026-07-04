@@ -4,7 +4,7 @@ import os from 'os';
 import YAML from 'yaml';
 import { resolveAgentConfigFromEnv } from './featureParamsEnvToYaml.mjs';
 
-import { configFilePath, logsDir, runtimeDir } from './paths.mjs';
+import { resolveAgentConfigFromEnv } from './featureParamsEnvToYaml.mjs';
 import { appendOutboundReqLog } from './outboundReqLog.mjs';
 import {
   newLayerId,
