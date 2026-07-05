@@ -3,8 +3,6 @@ import path from 'path';
 import os from 'os';
 import YAML from 'yaml';
 import { resolveAgentConfigFromEnv } from './featureParamsEnvToYaml.mjs';
-
-import { materializeAgentConfigFile } from './featureParamsEnvToYaml.mjs';
 import { appendOutboundReqLog } from './outboundReqLog.mjs';
 import {
   newLayerId,

@@ -28,8 +28,13 @@ class TestBashTool(unittest.IsolatedAsyncioTestCase):
     async def test_command_error_handling(self):
         result = await self.tool.execute(ToolCallArguments({"command": "invalid_command_123"}))
 
-        # Fix assertion: Check if error message contains 'not found' or 'not recognized' (Windows system)
-        self.assertTrue(any(s in result.error.lower() for s in ["not found", "not recognized"]))
+        # Locale-aware: en "not found"/"not recognized" (Windows), zh "未找到命令", etc.
+        err = result.error.lower()
+        self.assertTrue(
+            any(
+                s in err for s in ["not found", "not recognized", "未找到命令", "command not found"]
+            )
+        )
         self.assertNotEqual(result.error_code, 0)
 
     async def test_session_restart(self):

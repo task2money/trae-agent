@@ -556,8 +556,8 @@
     }
     .exec-rich-frame {
       flex: 1 1 auto;
+      min-height: 0;
       width: 100%;
-      min-height: 120px;
       border: 0;
       display: block;
       background: var(--panel);
@@ -919,7 +919,7 @@
     /** 将 exec-stream 分片（纯文本或已净化的 HTML）组装为 iframe srcdoc（与 machine_container §7 展示一致）。 */
     function buildExecRichSrcdoc(fragments) {
       const css =
-        '*{box-sizing:border-box}html,body{margin:0;padding:8px 10px;background:#161618;color:#e8e8e8;font:13px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace}' +
+        '*{box-sizing:border-box}html,body{margin:0;padding:8px 10px;height:100%;overflow:auto;background:#161618;color:#e8e8e8;font:13px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace}' +
         'pre.plain-chunk{margin:0 0 .6em 0;white-space:pre-wrap;word-break:break-word}' +
         '.rich-chunk{font-family:ui-sans-serif,system-ui,sans-serif;font-size:13px;line-height:1.5;margin:0 0 .75em 0}' +
         '.rich-chunk:last-child{margin-bottom:0}' +
@@ -973,19 +973,55 @@
 
     function setExecRichIframeSrcdocSticky(fr, srcdocHtml) {
       let stickToBottom = true;
+      let savedScrollTop = 0;
       try {
-        stickToBottom = iframeLogNearBottom(fr.contentDocument);
+        const doc = fr.contentDocument;
+        const el = iframeLogScrollingEl(doc);
+        stickToBottom = iframeLogNearBottom(doc);
+        if (!stickToBottom && el) savedScrollTop = el.scrollTop;
       } catch (_) {}
       fr.srcdoc = srcdocHtml;
       try {
-        if (stickToBottom) iframeLogScrollToBottom(fr.contentDocument);
+        const doc = fr.contentDocument;
+        const el = iframeLogScrollingEl(doc);
+        if (!el) return;
+        if (stickToBottom) {
+          iframeLogScrollToBottom(doc);
+        } else {
+          el.scrollTop = savedScrollTop;
+        }
       } catch (_) {}
+    }
+
+    /** Secure Context 外（HTTP 远程 IP）Clipboard API 不可用；textarea + execCommand 回退。 */
+    async function copyTextToClipboard(text) {
+      const payload = text == null ? '' : String(text);
+      if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+        try {
+          await navigator.clipboard.writeText(payload);
+          return;
+        } catch (_) {}
+      }
+      const ta = document.createElement('textarea');
+      ta.value = payload;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed';
+      ta.style.left = '-9999px';
+      document.body.appendChild(ta);
+      ta.select();
+      try {
+        const ok = document.execCommand('copy');
+        if (!ok) throw new Error('execCommand copy returned false');
+      } finally {
+        document.body.removeChild(ta);
+      }
     }
 
     try {
       window.__onlineServiceUiTest = {
         setExecRichIframeSrcdocSticky,
         iframeLogNearBottom,
+        copyTextToClipboard,
       };
     } catch (_) {}
 
@@ -1013,7 +1049,10 @@
     function setCloneFrameFromPlainLog(text) {
       const fr = document.getElementById('cloneOutFrame');
       if (!fr) return;
-      fr.srcdoc = buildExecRichSrcdoc([{ contentType: 'text/plain', text: normalizeCloneLogText(text || '') }]);
+      setExecRichIframeSrcdocSticky(
+        fr,
+        buildExecRichSrcdoc([{ contentType: 'text/plain', text: normalizeCloneLogText(text || '') }]),
+      );
     }
 
     function normalizeExecStreamContentType(ct) {
@@ -2135,7 +2174,7 @@
           const ban = document.getElementById('cloneOutBanner');
           if (ban) ban.textContent = (o.title || '开始克隆') + '\n\n';
           const fr = document.getElementById('cloneOutFrame');
-          if (fr) fr.srcdoc = buildExecRichSrcdoc([]);
+          if (fr) setExecRichIframeSrcdocSticky(fr, buildExecRichSrcdoc([]));
           ensureCloneLogPoll(o.layer_id);
           void syncCloneStreamFromManifest('sse-started');
           if (o.title) sseAppend('repo_clone_started · ' + o.title);
@@ -2457,7 +2496,7 @@
       copyBtn.disabled = true;
       copyBtn.setAttribute('aria-busy', 'true');
       try {
-        await navigator.clipboard.writeText(text);
+        await copyTextToClipboard(text);
         copyBtn.textContent = '已复制';
         setTimeout(() => {
           copyBtn.textContent = label;
@@ -2572,7 +2611,7 @@
           btn.disabled = true;
           btn.setAttribute('aria-busy', 'true');
           try {
-            await navigator.clipboard.writeText(text);
+            await copyTextToClipboard(text);
             btn.textContent = '已复制';
             setTimeout(() => {
               btn.textContent = label;
@@ -3681,7 +3720,7 @@
           timestamp: new Date().toISOString()
         };
         const jsonStr = JSON.stringify(structure, null, 2);
-        navigator.clipboard.writeText(jsonStr).then(() => {
+        copyTextToClipboard(jsonStr).then(() => {
           const toast = document.createElement('div');
           toast.className = 'meta';
           toast.style.cssText = 'color:var(--ok,#0a0);margin-top:0.35rem;';
