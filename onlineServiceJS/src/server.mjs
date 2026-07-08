@@ -92,15 +92,27 @@ import { gitPushRemoteArgFromOrigin } from './gitRemote.mjs';
 import { appendInitLogBestEffort } from './initLog.mjs';
 import { logJson } from './jsonLog.mjs';
 import { initOtel, startHttpSpan } from './otel.mjs';
+import { PARENT_SPAN_HEADER, isTraceIdOnlyRequest, resolveInboundCorrelation, SPAN_HEADER, TRACE_HEADER } from './traceId.mjs';
+import { formatTraceparent } from './otelTraceId.mjs';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const TRACE_HEADER = 'X-Trace-Id';
-
 function traceMiddleware(req, res, next) {
-  const tid = (req.headers[TRACE_HEADER.toLowerCase()] || '').toString().trim() || cryptoRandomId();
-  res.setHeader(TRACE_HEADER, tid);
-  req.traceId = tid;
-  const { end } = startHttpSpan(req, tid);
+  if (isTraceIdOnlyRequest(req)) {
+    res.status(400).json({
+      detail:
+        'trace propagation incomplete: require X-Parent-Span-Id or traceparent with X-Trace-Id',
+    });
+    return;
+  }
+  const corr = resolveInboundCorrelation(req, cryptoRandomId);
+  res.setHeader(TRACE_HEADER, corr.traceId);
+  res.setHeader(SPAN_HEADER, corr.spanId);
+  const tp = formatTraceparent(corr.traceId, corr.spanId);
+  if (tp) res.setHeader('traceparent', tp);
+  req.traceId = corr.traceId;
+  req.spanId = corr.spanId;
+  req.parentSpanId = corr.parentSpanId;
+  const { end } = startHttpSpan(req, corr);
   let ended = false;
   const finishSpan = () => {
     if (ended) return;

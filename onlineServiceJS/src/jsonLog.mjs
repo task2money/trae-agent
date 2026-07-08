@@ -1,5 +1,5 @@
 import { otelTraceIdHex } from './otelTraceId.mjs';
-import { resolveTraceId } from './traceId.mjs';
+import { resolveTraceId, spanIdFromRequest } from './traceId.mjs';
 
 const SERVICE_NAME = 'onlineServiceJS';
 
@@ -27,6 +27,10 @@ export function logJson(level, msg, fields = {}) {
     payload.trace_id = traceId;
     payload.otel_trace_id = otelTraceIdHex(traceId);
   }
+  const spanId = spanIdFromRequest(req);
+  if (spanId) payload.span_id = spanId;
+  const parentSpanId = String(req?.parentSpanId || '').trim();
+  if (parentSpanId) payload.parent_span_id = parentSpanId;
   // eslint-disable-next-line no-console
   console.log(JSON.stringify(payload));
 }

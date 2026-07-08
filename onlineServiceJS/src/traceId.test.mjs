@@ -2,9 +2,12 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  PARENT_SPAN_HEADER,
   resolveOutboundTraceId,
   resolveTraceId,
+  spanIdFromRequest,
   startupTraceId,
+  traceHeadersForOutbound,
   traceIdFromRequest,
 } from './traceId.mjs';
 
@@ -36,6 +39,16 @@ test('resolveTraceId uses startup env only when useStartupEnv', () => {
     if (prev === undefined) delete process.env.TRACE_ID;
     else process.env.TRACE_ID = prev;
   }
+});
+
+test('traceHeadersForOutbound sets parent span header', () => {
+  const headers = traceHeadersForOutbound('forward-trace-xyz12345', 'b1b2c3d4e5f67890');
+  assert.equal(headers['X-Trace-Id'], 'forward-trace-xyz12345');
+  assert.equal(headers[PARENT_SPAN_HEADER], 'b1b2c3d4e5f67890');
+});
+
+test('spanIdFromRequest prefers req.spanId', () => {
+  assert.equal(spanIdFromRequest({ spanId: 'c1c2c3d4e5f67890' }), 'c1c2c3d4e5f67890');
 });
 
 test('resolveOutboundTraceId prefers explicit over env', () => {

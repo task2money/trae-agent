@@ -36,17 +36,21 @@ export function initOtel(serviceName = 'onlineServiceJS') {
   };
 }
 
-export function startHttpSpan(req, externalTraceId) {
-  const tid = String(externalTraceId || '').trim();
+export function startHttpSpan(req, correlation) {
+  const corr =
+    typeof correlation === 'string'
+      ? { traceId: correlation, spanId: '', parentSpanId: '' }
+      : correlation || {};
+  const tid = String(corr.traceId || '').trim();
   if (!tid || !active || !tracer) {
     return { ctx: context.active(), end: () => {} };
   }
   const traceId = otelTraceIdHex(tid);
-  const spanId = randomSpanIdHex();
+  const spanId = corr.spanId || randomSpanIdHex();
   const parentCtx = trace.setSpanContext(context.active(), {
     traceId,
     spanId,
-    isRemote: true,
+    isRemote: Boolean(corr.parentSpanId),
     traceFlags: TraceFlags.SAMPLED,
   });
   const span = tracer.startSpan(

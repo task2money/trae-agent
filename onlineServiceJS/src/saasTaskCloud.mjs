@@ -97,13 +97,15 @@ export const HEARTBEAT_REQ_LOG_FILE = 'heartbeat.log';
  * @param {string} url
  * @param {object} body
  * @param {number} [timeoutSec]
- * @param {{ reqLogFile?: string, traceId?: string }} [opts]
+ * @param {{ reqLogFile?: string, traceId?: string, spanId?: string }} [opts]
  *   — `reqLogFile: 'heartbeat.log'` 时写入 reqLogs/heartbeat.log
  *   — `traceId` 转发请求的 X-Trace-Id；省略则用启动时 TRACE_ID env
+ *   — `spanId` 当前请求的 span，作为下游 X-Parent-Span-Id
  */
 export async function postJson(url, body, timeoutSec = 8, opts = {}) {
   const reqLogFile = opts && typeof opts === 'object' ? opts.reqLogFile : undefined;
   const outboundTraceId = opts && typeof opts === 'object' ? opts.traceId : undefined;
+  const outboundSpanId = opts && typeof opts === 'object' ? opts.spanId : undefined;
   const safeUrl = sanitizeUrlForOutboundLog(url);
   const fallbackUrl = loopbackFallbackUrl(url);
   const safeFallbackUrl = fallbackUrl ? sanitizeUrlForOutboundLog(fallbackUrl) : '';
@@ -118,7 +120,7 @@ export async function postJson(url, body, timeoutSec = 8, opts = {}) {
     while (idx < attempts.length) {
       const targetUrl = attempts[idx];
       const safeTargetUrl = sanitizeUrlForOutboundLog(targetUrl);
-      const headers = traceHeadersForOutbound(outboundTraceId);
+      const headers = traceHeadersForOutbound(outboundTraceId, outboundSpanId);
       try {
         if (isDebugAgentEnabled()) {
           appendOutboundReqLog(
