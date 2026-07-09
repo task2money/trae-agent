@@ -3,6 +3,7 @@ import path from 'path';
 import os from 'os';
 import YAML from 'yaml';
 import { resolveAgentConfigFromEnv } from './featureParamsEnvToYaml.mjs';
+import { appendFeatureParamsEnvLogBestEffort } from './featureParamsEnvLog.mjs';
 import { appendOutboundReqLog } from './outboundReqLog.mjs';
 import {
   newLayerId,
@@ -14,7 +15,7 @@ import {
   LAYER_ID_RE,
   repoDirNameFromUrl,
 } from './layerFs.mjs';
-import { configFilePath, layersRoot } from './paths.mjs';
+import { configFilePath, layersRoot, logsDir } from './paths.mjs';
 import {
   appendExecStream,
   resetExecStream,
@@ -884,6 +885,53 @@ export async function runBootstrapTokenExchangeOnly() {
 }
 
 /**
+ * 将 feature-params-env 响应落盘为 service_config.yaml，并写入/打印 env 快照日志。
+ * @param {Record<string, unknown>} envMap
+ * @param {{
+ *   appendEnvLog?: typeof appendFeatureParamsEnvLogBestEffort,
+ *   resolveConfig?: typeof resolveAgentConfigFromEnv,
+ *   configPath?: () => string,
+ *   writeFile?: typeof fs.writeFileSync,
+ *   mkdirSync?: typeof fs.mkdirSync,
+ *   parseYaml?: typeof YAML.parse,
+ *   logError?: (...args: unknown[]) => void,
+ * }} [deps]
+ * @returns {string} 写入的配置文件路径
+ */
+export function persistFeatureParamsEnv(envMap, deps = {}) {
+  const appendEnvLog = deps.appendEnvLog || appendFeatureParamsEnvLogBestEffort;
+  const resolveConfig = deps.resolveConfig || resolveAgentConfigFromEnv;
+  const configPath = deps.configPath || configFilePath;
+  const writeFile = deps.writeFile || fs.writeFileSync;
+  const mkdir = deps.mkdirSync || fs.mkdirSync.bind(fs);
+  const parseYaml = deps.parseYaml || YAML.parse.bind(YAML);
+  const logError = deps.logError || console.error.bind(console);
+
+  if (envMap == null || typeof envMap !== 'object') {
+    throw new Error('feature-params-env missing env');
+  }
+  if (envMap.TASK_AGENT_MAX_STEPS == null) {
+    throw new Error('feature-params-env missing TASK_AGENT_MAX_STEPS');
+  }
+
+  const envLogResult = appendEnvLog({ envMapping: envMap });
+  if (envLogResult && envLogResult.ok === false) {
+    logError('[onlineServiceJS] feature-params-env.log append error:', envLogResult.error);
+  }
+  appendOutboundReqLog(
+    `bootstrap: feature-params-env keys=${Object.keys(envMap).sort().join(',')}`,
+  );
+
+  const yamlText = resolveConfig(envMap);
+  parseYaml(yamlText);
+  const dest = configPath();
+  mkdir(path.dirname(dest), { recursive: true });
+  writeFile(dest, yamlText, 'utf8');
+  appendOutboundReqLog(`bootstrap: wrote ${dest}`);
+  return dest;
+}
+
+/**
  * 容器已监听端口后：拉取任务详情 → 克隆关联仓库 → 拉取并写入 feature YAML。
  */
 export async function runBootstrapAfterListen(ctx) {
@@ -929,19 +977,7 @@ export async function runBootstrapAfterListen(ctx) {
     { access_token: newAccess },
     timeoutSec
   );
-  const envMap = y.env;
-  if (envMap == null || typeof envMap !== 'object') {
-    throw new Error('feature-params-env missing env');
-  }
-  if (envMap.TASK_AGENT_MAX_STEPS == null) {
-    throw new Error('feature-params-env missing TASK_AGENT_MAX_STEPS');
-  }
-  const yamlText = resolveAgentConfigFromEnv(envMap);
-  YAML.parse(yamlText);
-  const dest = configFilePath();
-  fs.mkdirSync(path.dirname(dest), { recursive: true });
-  fs.writeFileSync(dest, yamlText, 'utf8');
-  appendOutboundReqLog(`bootstrap: wrote ${dest}`);
+  persistFeatureParamsEnv(y.env);
   console.log('[onlineServiceJS] 任务引导完成（详情已拉取、克隆与配置已就绪）。');
 }
 

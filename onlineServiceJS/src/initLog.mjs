@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 
+import { isTruthyEnvFlag, redactEnvSnapshot } from './envLogRedact.mjs';
 import { logsDir } from './paths.mjs';
 
 export function parseInitLogEnvKeysPolicy(raw) {
@@ -14,7 +15,19 @@ export function parseInitLogEnvKeysPolicy(raw) {
   return new Set(keys);
 }
 
-export function buildInitLogEnvSnapshot(envMapping, rawPolicy) {
+/**
+ * init.log 脱敏：INIT_LOG_REDACT 或全局 ENV_LOG_REDACT。
+ * @param {unknown} [rawInit]
+ * @param {unknown} [rawGlobal]
+ */
+export function isInitLogRedactEnabled(
+  rawInit = process.env.INIT_LOG_REDACT,
+  rawGlobal = process.env.ENV_LOG_REDACT
+) {
+  return isTruthyEnvFlag(rawInit) || isTruthyEnvFlag(rawGlobal);
+}
+
+export function buildInitLogEnvSnapshot(envMapping, rawPolicy, redact = false) {
   const policy = parseInitLogEnvKeysPolicy(rawPolicy);
   const out = {};
   const source = envMapping && typeof envMapping === 'object' ? envMapping : {};
@@ -26,27 +39,29 @@ export function buildInitLogEnvSnapshot(envMapping, rawPolicy) {
     out[key] = String(value);
   }
 
-  return out;
+  return redactEnvSnapshot(out, Boolean(redact));
 }
 
-export function buildInitLogRecord({ pid, port, envMapping, now, rawPolicy }) {
+export function buildInitLogRecord({ pid, port, envMapping, now, rawPolicy, redact }) {
   const ts = (now instanceof Date ? now : new Date(now ?? Date.now())).toISOString();
+  const shouldRedact = redact === undefined ? isInitLogRedactEnabled() : Boolean(redact);
   return `${JSON.stringify({
     ts,
     event: 'onlineServiceJS.init',
     pid,
     port: String(port ?? ''),
-    env: buildInitLogEnvSnapshot(envMapping, rawPolicy),
+    redact: shouldRedact,
+    env: buildInitLogEnvSnapshot(envMapping, rawPolicy, shouldRedact),
   })}\n`;
 }
 
 export function appendInitLogBestEffort(
-  { pid, port, envMapping, now, rawPolicy },
+  { pid, port, envMapping, now, rawPolicy, redact },
   { writeFile = fs.appendFileSync } = {}
 ) {
   try {
     const file = path.join(logsDir(), 'init.log');
-    writeFile(file, buildInitLogRecord({ pid, port, envMapping, now, rawPolicy }));
+    writeFile(file, buildInitLogRecord({ pid, port, envMapping, now, rawPolicy, redact }));
     return { ok: true, error: null };
   } catch (error) {
     return { ok: false, error };

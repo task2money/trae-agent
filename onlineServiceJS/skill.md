@@ -22,6 +22,23 @@ Dockerfile 基于 **ubuntu:24.04**（多阶段构建 Python venv；主软件源�
 
 容器换票、引导克隆等仍可使用：`TaskApiEndPoint`、`BusinessApiEndPoint`、`BUSINESS_API_ENDPOINT`、`tenantId`、`workspaceId`、`taskId`、`ACCESS_TOKEN`（与任务云约定一致；**完整协议**见 `task2app/Saas_project/skillList/machine_container.md`）。**`TaskApiEndPoint` 推荐**为 `…/api/tenant/…/workspace/…/task/…/cloud`；**容错**：`saasTaskCloud.mjs` 的 `taskApiPrefix()` 亦可从 pathname 解析 **`/tenant/…/task-detail/<task>/`**（浏览器任务详情页 URL）及 **`/api/…/task-detail/<task>`**，避免未设三环境变量时换票失败、`container_refresh_token` 不落库。**启动就绪日志**：标准输出含 **`[onlineServiceJS] server listening on http://0.0.0.0:<PORT>`**，供编排检测。监听成功后**先** `register-reachability`（写入 `server_url`）并启动 **SaaS 心跳**，再**异步**执行引导克隆与 `service_config.yaml` 写入，避免长时间 `git clone` 阻塞任务详情拉层图与心跳。
 
+**功能参数 env 拉取日志**：bootstrap 成功 POST `…/server-container-token/feature-params-env/` 后，将返回的 `env` 快照追加写入 **`{ONLINE_PROJECT_STATE_ROOT}/logs/feature-params-env.log`**（单行 JSON，`event=onlineServiceJS.feature_params_env`），并向标准输出打印两行：
+
+1. **短摘要**（便于启动日志面板检索）：`[onlineServiceJS] feature-params-env pulled: keys=… count=N`
+2. **完整快照**：`[onlineServiceJS] feature-params-env pulled: {…}`
+
+`go_relayToTrae` 会转发子进程 stdout 到 `/v1/status` 的 `logs`（及 SSE status-push），因此任务详情「启动日志」面板可直接看到上述行。写日志失败不阻断 YAML 落盘。启动时进程环境快照仍见 **`logs/init.log`**（可选白名单 `INIT_LOG_ENV_KEYS`）。
+
+**可选脱敏**（默认关闭，与历史原值落盘一致）：
+
+| 变量 | 作用 |
+|------|------|
+| `FEATURE_PARAMS_ENV_LOG_REDACT=1` | 仅脱敏 `feature-params-env.log` / 对应 stdout |
+| `INIT_LOG_REDACT=1` | 仅脱敏 `init.log` |
+| `ENV_LOG_REDACT=1` | 同时开启上述两类脱敏 |
+
+开启后，`ACCESS_TOKEN` / `*_TOKEN` / `api_key` / `*_SECRET` 等键值记为 `(redacted len=N)`；`TASK_LLM_PROVIDERS_JSON` 内嵌 `api_key` 亦会打码。JSON 记录含 `"redact": true|false`。
+
 运行时与任务行为还可通过环境变量调节（见 `src/jobsRuntime.mjs`、`src/bootstrap.mjs`）；克隆相关常见有 `GIT_CLONE_TIMEOUT_SEC` 等（以代码为准）。
 
 配置文件固定路径：`onlineProject_state/runtime/service_config.yaml`（由 API 写入；内容与仓库根目录 `trae_config.yaml.example` 同结构）。任务状态持久化：`onlineProject_state/runtime/jobs_state.json`。Docker 镜像内示例：`/app/trae_config.yaml.example`。

@@ -385,9 +385,16 @@ export async function postContainerHeartbeatToSaas(message) {
   if (msg) body.message = msg.slice(0, 500);
   try {
     const data = await postJson(url, body, 10, { reqLogFile: HEARTBEAT_REQ_LOG_FILE });
-    const saasSeq = data?.seq;
-    if (typeof saasSeq === 'number' && Number.isFinite(saasSeq) && saasSeq >= 0) {
-      lastSaasHeartbeatSeq = saasSeq;
+    // SaaS 全局中间件会把 JSON 数字转成字符串；须兼容 number / numeric string
+    const saasSeqRaw = data?.seq;
+    const saasSeq =
+      typeof saasSeqRaw === 'number'
+        ? saasSeqRaw
+        : typeof saasSeqRaw === 'string' && saasSeqRaw.trim() !== ''
+          ? Number(saasSeqRaw)
+          : NaN;
+    if (Number.isFinite(saasSeq) && saasSeq >= 0) {
+      lastSaasHeartbeatSeq = Math.floor(saasSeq);
     }
     return Boolean(data?.bidirectional_ok ?? data?.status === 'ok');
   } catch {

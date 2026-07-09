@@ -306,7 +306,22 @@ function logReq(req, res, start, statusOverride) {
     /* ignore */
   }
 }
+/** 下行心跳探测极高频，写入 stdout/requests.log 会刷屏「启动日志」；状态改由任务详情「容器连接状态」展示 */
+function isSaasHeartbeatProbePath(req) {
+  const raw = String(req?.originalUrl || req?.url || '');
+  const pathOnly = raw.split('?')[0];
+  return (
+    pathOnly === '/api/saas-heartbeat-probe' ||
+    pathOnly.endsWith('/api/saas-heartbeat-probe') ||
+    pathOnly === '/saas-heartbeat-probe' ||
+    pathOnly.endsWith('/saas-heartbeat-probe')
+  );
+}
+
 app.use((req, res, next) => {
+  if (isSaasHeartbeatProbePath(req)) {
+    return next();
+  }
   const s = Date.now();
   let logged = false;
   const runLog = (statusOverride) => {

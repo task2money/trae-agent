@@ -75,3 +75,50 @@ test('postContainerHeartbeatToSaas：POST .../heartbeat/ 且 body 含 access_tok
     await new Promise((resolve) => server.close(() => resolve(undefined)));
   }
 });
+
+test('postContainerHeartbeatToSaas：兼容 SaaS 将 seq 序列化为字符串并在下一轮回传 ack', async () => {
+  const saved = snapshotEnv(KEYS);
+  /** @type {object[]} */
+  const bodies = [];
+  const server = http.createServer((req, res) => {
+    const chunks = [];
+    req.on('data', (c) => chunks.push(c));
+    req.on('end', () => {
+      bodies.push(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+      const n = bodies.length;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      // 模拟 NumberToStringMiddleware：数字字段变为字符串
+      res.end(
+        JSON.stringify({
+          status: 'ok',
+          task_id: 't1',
+          seq: String(n),
+          ack: String(n),
+          bidirectional_ok: true,
+        }),
+      );
+    });
+  });
+  await new Promise((resolve, reject) => {
+    server.on('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const addr = server.address();
+  const port = typeof addr === 'object' && addr ? addr.port : 0;
+  try {
+    resetContainerHeartbeatSeqState();
+    delete process.env.tenantId;
+    delete process.env.workspaceId;
+    delete process.env.taskId;
+    process.env.TaskApiEndPoint = `http://127.0.0.1:${port}/api/tenant/ta/workspace/ws1/task/td1/cloud`;
+    process.env.ACCESS_TOKEN = 'hb-str-seq';
+    assert.strictEqual(await postContainerHeartbeatToSaas('r1'), true);
+    assert.strictEqual(await postContainerHeartbeatToSaas('r2'), true);
+    assert.strictEqual(bodies.length, 2);
+    assert.strictEqual(bodies[0].ack, undefined);
+    assert.strictEqual(bodies[1].ack, 1);
+  } finally {
+    restoreEnv(saved);
+    await new Promise((resolve) => server.close(() => resolve(undefined)));
+  }
+});

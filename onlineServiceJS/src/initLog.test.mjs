@@ -30,6 +30,18 @@ test('默认全量采集环境变量：空键忽略，值转字符串', () => {
   });
 });
 
+test('INIT_LOG_REDACT 开启时脱敏 ACCESS_TOKEN 等敏感键', () => {
+  const got = buildInitLogEnvSnapshot(
+    { ACCESS_TOKEN: 'tok_abc', PORT: '8765' },
+    undefined,
+    true
+  );
+  assert.deepStrictEqual(got, {
+    ACCESS_TOKEN: '(redacted len=7)',
+    PORT: '8765',
+  });
+});
+
 test('配置 INIT_LOG_ENV_KEYS 时仅保留白名单键（逗号分隔并 trim）', () => {
   const envMapping = {
     A: 'va',
@@ -66,6 +78,7 @@ test('buildInitLogRecord 生成 JSON 行格式，包含 ts/event/pid/port/env', 
     event: 'onlineServiceJS.init',
     pid: 321,
     port: '8787',
+    redact: false,
     env: { A: '1' },
   });
 });
@@ -101,6 +114,7 @@ test('appendInitLogBestEffort 追加写入 ONLINE_PROJECT_STATE_ROOT/logs/init.l
       event: 'onlineServiceJS.init',
       pid: 7,
       port: '9000',
+      redact: false,
       env: { K: 'v' },
     });
     assert.deepStrictEqual(JSON.parse(lines[1]), {
@@ -108,6 +122,7 @@ test('appendInitLogBestEffort 追加写入 ONLINE_PROJECT_STATE_ROOT/logs/init.l
       event: 'onlineServiceJS.init',
       pid: 7,
       port: '9001',
+      redact: false,
       env: { K: 'v2' },
     });
   } finally {
