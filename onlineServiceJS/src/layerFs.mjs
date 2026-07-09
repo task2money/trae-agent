@@ -555,15 +555,28 @@ export function deleteLayerTree(layerId) {
   }
 }
 
+/**
+ * 从 clone URL 推导层内子目录名。须支持 HTTPS 与 SCP 风格（`git@host:group/repo.git`）；
+ * 后者不能用 WHATWG URL 解析，否则会落到默认 `repo`，多仓并行克隆互相踩目录。
+ */
 export function repoDirNameFromUrl(url) {
+  const raw = String(url || '').trim();
+  if (!raw) return 'repo';
+  let pathPart = '';
   try {
-    const u = new URL(url);
-    let base = u.pathname.split('/').filter(Boolean).pop() || 'repo';
-    if (base.endsWith('.git')) base = base.slice(0, -4);
-    return base.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^[-._]+|[-._]+$/g, '') || 'repo';
+    const u = new URL(raw);
+    pathPart = String(u.pathname || '');
   } catch {
-    return 'repo';
+    const scp = raw.match(/^[^@\s]+@[^:\s]+:(.+)$/);
+    if (scp && scp[1]) {
+      pathPart = String(scp[1]).replace(/^\/+/, '');
+    } else {
+      pathPart = raw;
+    }
   }
+  let base = pathPart.split('/').filter(Boolean).pop() || 'repo';
+  if (base.toLowerCase().endsWith('.git')) base = base.slice(0, -4);
+  return base.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^[-._]+|[-._]+$/g, '') || 'repo';
 }
 
 export function resolvedParentLayerId(layerId, knownIds, jobs) {

@@ -5,18 +5,40 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { persistFeatureParamsEnv } from './bootstrap.mjs';
+import {
+  applyFeatureParamsEnvToProcess,
+  persistFeatureParamsEnv,
+} from './bootstrap.mjs';
+
+test('applyFeatureParamsEnvToProcess 写入目标 env 并跳过空键', () => {
+  const target = { KEEP: '1' };
+  const keys = applyFeatureParamsEnvToProcess(
+    {
+      TASK_FEATURE_PARAMS_SCOPE: 'company',
+      '  ': 'ignored',
+      TASK_AGENT_MAX_STEPS: 200,
+    },
+    target,
+  );
+  assert.deepEqual(keys, ['TASK_AGENT_MAX_STEPS', 'TASK_FEATURE_PARAMS_SCOPE']);
+  assert.equal(target.TASK_FEATURE_PARAMS_SCOPE, 'company');
+  assert.equal(target.TASK_AGENT_MAX_STEPS, '200');
+  assert.equal(target.KEEP, '1');
+  assert.equal(Object.prototype.hasOwnProperty.call(target, '  '), false);
+});
 
 test('persistFeatureParamsEnv 拉取后会调用 env 日志并写入 yaml', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'persist-feature-params-'));
   const dest = path.join(dir, 'service_config.yaml');
   const logged = [];
   const errors = [];
+  const processEnv = {};
 
   const written = persistFeatureParamsEnv(
     {
       TASK_AGENT_MAX_STEPS: '48',
       TASK_AGENT_MODEL: 'demo-model',
+      TASK_FEATURE_PARAMS_SCOPE: 'workspace',
     },
     {
       appendEnvLog: ({ envMapping }) => {
@@ -27,12 +49,15 @@ test('persistFeatureParamsEnv 拉取后会调用 env 日志并写入 yaml', () =
       configPath: () => dest,
       parseYaml: () => ({ agents: { trae_agent: { max_steps: 48 } } }),
       logError: (...args) => errors.push(args),
+      processEnv,
     }
   );
 
   assert.equal(written, dest);
   assert.equal(logged.length, 1);
   assert.equal(logged[0].TASK_AGENT_MAX_STEPS, '48');
+  assert.equal(processEnv.TASK_FEATURE_PARAMS_SCOPE, 'workspace');
+  assert.equal(processEnv.TASK_AGENT_MAX_STEPS, '48');
   assert.ok(fs.existsSync(dest));
   assert.equal(errors.length, 0);
   fs.rmSync(dir, { recursive: true, force: true });

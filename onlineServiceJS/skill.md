@@ -22,12 +22,16 @@ Dockerfile 基于 **ubuntu:24.04**（多阶段构建 Python venv；主软件源�
 
 容器换票、引导克隆等仍可使用：`TaskApiEndPoint`、`BusinessApiEndPoint`、`BUSINESS_API_ENDPOINT`、`tenantId`、`workspaceId`、`taskId`、`ACCESS_TOKEN`（与任务云约定一致；**完整协议**见 `task2app/Saas_project/skillList/machine_container.md`）。**`TaskApiEndPoint` 推荐**为 `…/api/tenant/…/workspace/…/task/…/cloud`；**容错**：`saasTaskCloud.mjs` 的 `taskApiPrefix()` 亦可从 pathname 解析 **`/tenant/…/task-detail/<task>/`**（浏览器任务详情页 URL）及 **`/api/…/task-detail/<task>`**，避免未设三环境变量时换票失败、`container_refresh_token` 不落库。**启动就绪日志**：标准输出含 **`[onlineServiceJS] server listening on http://0.0.0.0:<PORT>`**，供编排检测。监听成功后**先** `register-reachability`（写入 `server_url`）并启动 **SaaS 心跳**，再**异步**执行引导克隆与 `service_config.yaml` 写入，避免长时间 `git clone` 阻塞任务详情拉层图与心跳。
 
-**功能参数 env 拉取日志**：bootstrap 成功 POST `…/server-container-token/feature-params-env/` 后，将返回的 `env` 快照追加写入 **`{ONLINE_PROJECT_STATE_ROOT}/logs/feature-params-env.log`**（单行 JSON，`event=onlineServiceJS.feature_params_env`），并向标准输出打印两行：
+**功能参数 env 拉取与注入**：bootstrap 成功 POST `…/server-container-token/feature-params-env/` 后，将返回的 `env`：
 
-1. **短摘要**（便于启动日志面板检索）：`[onlineServiceJS] feature-params-env pulled: keys=… count=N`
-2. **完整快照**：`[onlineServiceJS] feature-params-env pulled: {…}`
+1. **写入 `process.env`**（含用户 `extra_env_vars` 与只读 `TASK_FEATURE_PARAMS_SCOPE` / `CONFIG_ID` / `CONFIG_NAME`），供后续 `trae-cli` / bash 子进程继承
+2. 快照追加写入 **`{ONLINE_PROJECT_STATE_ROOT}/logs/feature-params-env.log`**（单行 JSON，`event=onlineServiceJS.feature_params_env`）
+3. 向标准输出打印两行：
+   - **短摘要**（便于启动日志面板检索）：`[onlineServiceJS] feature-params-env pulled: keys=… count=N`
+   - **完整快照**：`[onlineServiceJS] feature-params-env pulled: {…}`
+4. 再转为 `service_config.yaml`
 
-`go_relayToTrae` 会转发子进程 stdout 到 `/v1/status` 的 `logs`（及 SSE status-push），因此任务详情「启动日志」面板可直接看到上述行。写日志失败不阻断 YAML 落盘。启动时进程环境快照仍见 **`logs/init.log`**（可选白名单 `INIT_LOG_ENV_KEYS`）。
+`go_relayToTrae` 会转发子进程 stdout 到 `/v1/status` 的 `logs`（及 SSE status-push），因此任务详情「启动日志」面板可直接看到上述行。写日志失败不阻断 YAML 落盘。启动时进程环境快照仍见 **`logs/init.log`**（可选白名单 `INIT_LOG_ENV_KEYS`）；注意 init.log 在 listen 时落盘，**早于** feature-params 拉取，故 SCOPE 等键以 `feature-params-env pulled` 行为准。
 
 **可选脱敏**（默认关闭，与历史原值落盘一致）：
 
@@ -142,7 +146,7 @@ Dockerfile 基于 **ubuntu:24.04**（多阶段构建 Python venv；主软件源�
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| `GET` | `/api/layers` | 列出可写层（**不含** `meta_kind=empty` 锚点）。 |
+| `GET` | `/api/layers` | 列出可写层（**不含** `meta_kind=empty` 锚点）。**网关转发**亦可使用 scoped 形态 `/api/tenant/{t}/workspace/{w}/task/{task}/layers`（入站 rewrite 到本路径；访问日志保留 scoped `originalUrl`）。 |
 | `GET` | `/api/layers/empty-root` | 返回空层锚点 `layer_id`。 |
 | `GET` | `/api/layers/{layer_id}/files` | 层内文件扁平列表（实现上有条数上限，默认与遍历深度以代码为准）。 |
 | `GET` | `/api/layers/{layer_id}/files/{file_rel_posix}` | 读取单文件；支持 `max_bytes` 等（见路由实现）。 |

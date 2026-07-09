@@ -10,6 +10,7 @@ import { spawn, spawnSync } from 'child_process';
 import { authMiddleware, accessTokenExpected } from './auth.mjs';
 import { getAgentRenderHints } from './agentRenderHints.mjs';
 import { serviceRoot, configFilePath, repoRoot, logsDir } from './paths.mjs';
+import { createScopedTaskApiRewriteMiddleware } from './scopedTaskApiPath.mjs';
 import {
   appendOutboundReqLog,
   appendGitPushReqLog,
@@ -280,6 +281,7 @@ function safeRepoRelativePathForGitAdd(work, relPath) {
 
 const app = express();
 app.use(traceMiddleware);
+app.use(createScopedTaskApiRewriteMiddleware());
 app.use(express.json({ limit: '20mb' }));
 app.use(createDebugAgentInboundLoggerMiddleware());
 

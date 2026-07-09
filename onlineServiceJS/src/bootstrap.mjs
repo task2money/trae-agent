@@ -433,14 +433,18 @@ async function cloneReposIntoSharedLayer(urls, credRoot, cloudPrefix, accessToke
   const n = trimmed.length;
   /** @type {{ raw: string, repoDir: string, index: number }[]} */
   const jobs = [];
+  /** 同批并行克隆须预留目录名：仅查 existsSync 无法避免两仓同名同时 mkdir。 */
+  const reservedNames = new Set();
   for (let i = 0; i < trimmed.length; i++) {
     const raw = trimmed[i];
-    let repoDir = path.join(layerDir, repoDirNameFromUrl(raw));
+    let name = repoDirNameFromUrl(raw);
     let suf = 2;
-    while (fs.existsSync(repoDir)) {
-      repoDir = path.join(layerDir, `${path.basename(repoDir)}_${suf}`);
+    let repoDir = path.join(layerDir, name);
+    while (fs.existsSync(repoDir) || reservedNames.has(path.basename(repoDir))) {
+      repoDir = path.join(layerDir, `${name}_${suf}`);
       suf += 1;
     }
+    reservedNames.add(path.basename(repoDir));
     jobs.push({ raw, repoDir, index: i });
   }
 
@@ -885,7 +889,28 @@ export async function runBootstrapTokenExchangeOnly() {
 }
 
 /**
- * 将 feature-params-env 响应落盘为 service_config.yaml，并写入/打印 env 快照日志。
+ * 将 feature-params-env 映射写入进程环境，供后续子进程（trae-cli / bash）继承。
+ * 空键跳过；值统一转为字符串。
+ * @param {Record<string, unknown>} envMap
+ * @param {NodeJS.ProcessEnv} [targetEnv]
+ * @returns {string[]} 实际写入的键名（已排序）
+ */
+export function applyFeatureParamsEnvToProcess(envMap, targetEnv = process.env) {
+  const applied = [];
+  if (envMap == null || typeof envMap !== 'object') {
+    return applied;
+  }
+  for (const [rawKey, value] of Object.entries(envMap)) {
+    const key = String(rawKey ?? '').trim();
+    if (!key) continue;
+    targetEnv[key] = String(value ?? '');
+    applied.push(key);
+  }
+  return applied.sort();
+}
+
+/**
+ * 将 feature-params-env 响应写入进程环境、落盘为 service_config.yaml，并写入/打印 env 快照日志。
  * @param {Record<string, unknown>} envMap
  * @param {{
  *   appendEnvLog?: typeof appendFeatureParamsEnvLogBestEffort,
@@ -895,6 +920,8 @@ export async function runBootstrapTokenExchangeOnly() {
  *   mkdirSync?: typeof fs.mkdirSync,
  *   parseYaml?: typeof YAML.parse,
  *   logError?: (...args: unknown[]) => void,
+ *   applyToProcess?: typeof applyFeatureParamsEnvToProcess,
+ *   processEnv?: NodeJS.ProcessEnv,
  * }} [deps]
  * @returns {string} 写入的配置文件路径
  */
@@ -906,6 +933,8 @@ export function persistFeatureParamsEnv(envMap, deps = {}) {
   const mkdir = deps.mkdirSync || fs.mkdirSync.bind(fs);
   const parseYaml = deps.parseYaml || YAML.parse.bind(YAML);
   const logError = deps.logError || console.error.bind(console);
+  const applyToProcess = deps.applyToProcess || applyFeatureParamsEnvToProcess;
+  const processEnv = deps.processEnv || process.env;
 
   if (envMap == null || typeof envMap !== 'object') {
     throw new Error('feature-params-env missing env');
@@ -913,6 +942,11 @@ export function persistFeatureParamsEnv(envMap, deps = {}) {
   if (envMap.TASK_AGENT_MAX_STEPS == null) {
     throw new Error('feature-params-env missing TASK_AGENT_MAX_STEPS');
   }
+
+  const appliedKeys = applyToProcess(envMap, processEnv);
+  appendOutboundReqLog(
+    `bootstrap: applied feature-params-env to process.env keys=${appliedKeys.join(',') || '(none)'}`,
+  );
 
   const envLogResult = appendEnvLog({ envMapping: envMap });
   if (envLogResult && envLogResult.ok === false) {
