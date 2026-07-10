@@ -24,13 +24,29 @@ class LLMProvider(Enum):
     GOOGLE = "google"
     DEEPSEEK = "deepseek"
 
+    @classmethod
+    def from_config_value(cls, value: str) -> "LLMProvider":
+        """Parse provider id; case-insensitive so deepSeek maps to deepseek."""
+        raw = str(value or "").strip()
+        if not raw:
+            raise ValueError(f"{raw!r} is not a valid LLMProvider")
+        try:
+            return cls(raw)
+        except ValueError:
+            return cls(raw.lower())
+
 
 class LLMClient:
     """Main LLM client that supports multiple providers."""
 
     def __init__(self, model_config: ModelConfig):
-        self.provider: LLMProvider = LLMProvider(model_config.model_provider.provider)
+        self.provider: LLMProvider = LLMProvider.from_config_value(
+            model_config.model_provider.provider
+        )
         self.model_config: ModelConfig = model_config
+        # Keep runtime provider id aligned with enum value for env/key lookups.
+        if self.model_config.model_provider.provider != self.provider.value:
+            self.model_config.model_provider.provider = self.provider.value
 
         match self.provider:
             case LLMProvider.OPENAI:

@@ -38,13 +38,23 @@
 #   NPM_REGISTRY  可选，传给 Dockerfile（例：https://registry.npmmirror.com），减轻 npm ci 时 ECONNRESET。
 #   SKIP_INTERNAL_APT_MIRROR  默认 1：从 apt sources 去掉 192.168.3.25 内网源（笔记本/CI）。
 #                             在内网构建且需要该源时设为 0/false。
+#   DOCKER_BASE_IMAGE         覆盖 Dockerfile BASE_IMAGE（例：docker.m.daocloud.io/library/ubuntu:24.04）。
+#                             未设置时脚本会探测可用引用：短名 ubuntu:24.04 失败则回退镜像站全限定名。
+#   DOCKER_BASE_IMAGE_MIRRORS 逗号分隔的回退候选（默认含 daocloud / 1ms.run / dockerhub.icu）。
+#   DOCKER_BUILDX_CLEAR_PROXY 默认 1：对 buildx 子进程去掉 http(s)_proxy/all_proxy，避免失效的本地
+#                             SOCKS（如 127.0.0.1:1234）导致 registry metadata / token 解析失败。
+#   DOCKER_REGISTRY_AUTO_LOGIN 默认 1：推送前检查目标 registry 是否已 docker login。
+#                             若目标为 *.aliyuncs.com 且本机仅登录了其它 cn-*.aliyuncs.com 区域，
+#                             则复用该区域凭证自动 docker login 到目标主机（阿里云 ACR 账号跨区域通用，
+#                             但每个 registry 主机名须分别登录，否则会 insufficient_scope）。
 #
 #   推送与代理：docker buildx --push 由守护进程向仓库上传大块层。若用 proxychains4 包裹整条脚本，或 Docker Desktop
 #   代理指向易断连的 HTTP 代理（日志里常见 host:3128），易出现 Put blob EOF、broken pipe、TLS handshake timeout。
 #   对国内 registry（如 *.aliyuncs.com）建议直连推送：不要 proxychains 包裹本脚本；或在 Docker Desktop「Proxies」里把
 #   目标 registry 主机名加入 bypass / NO_PROXY。需代理访问外网时，可只对 curl/npm 等单独配置，避免代理截断 registry 长上传。
 #
-# 推送前请在目标仓库执行 docker login（本脚本不代为交互登录）。
+# 推送前请对「目标 registry 主机」执行 docker login（阿里云杭州/青岛等区域主机名不同，互不共用登录态）。
+# 本脚本在 DOCKER_REGISTRY_AUTO_LOGIN=1 时可从已登录的其它 cn-*.aliyuncs.com 复用凭证，不代替交互输入密码。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -193,6 +203,32 @@ assert_required_push_platforms() {
   fi
 }
 
+# 非本机架构需要 QEMU/binfmt；缺省时提前失败，避免跑到 RUN 才报 exec format error。
+ensure_cross_platform_emulation() {
+  local platforms_csv="$1"
+  local native base_img
+  native="$(native_platform)"
+  base_img="${RESOLVED_BASE_IMAGE:-ubuntu:24.04}"
+  local _oifs=$IFS
+  local plat
+  IFS=','
+  for plat in $platforms_csv; do
+    IFS=$_oifs
+    plat="$(trim_spaces "$plat")"
+    [[ -z "$plat" || "$plat" == "$native" ]] && continue
+    if ! docker run --rm --platform "$plat" "$base_img" true >/dev/null 2>&1; then
+      echo "[buildDocker.sh] 错误: 本机无法执行平台 $plat 的容器（exec format error / 缺少 QEMU binfmt）" >&2
+      echo "[buildDocker.sh] 修复建议:" >&2
+      echo "[buildDocker.sh]   1) sudo apt-get install -y qemu-user-static binfmt-support" >&2
+      echo "[buildDocker.sh]      或: docker run --privileged --rm tonistiigi/binfmt --install all" >&2
+      echo "[buildDocker.sh]   2) 仅推送本机架构: DOCKER_PLATFORMS=${native} REQUIRED_PUSH_PLATFORMS=${native} DOCKER_PUSH=1 ./buildDocker.sh" >&2
+      return 1
+    fi
+  done
+  IFS=$_oifs
+  return 0
+}
+
 platform_to_arch_slug() {
   case "$(trim_spaces "$1")" in
     linux/arm64) printf '%s' arm64 ;;
@@ -202,6 +238,188 @@ platform_to_arch_slug() {
       return 1
       ;;
   esac
+}
+
+# 从镜像引用取出 registry 主机名（registry.example.com/ns/name[:tag] → registry.example.com）。
+registry_host_from_ref() {
+  local ref="${1%%@*}"
+  ref="${ref%%:*}"
+  case "$ref" in
+    */*) printf '%s' "${ref%%/*}" ;;
+    *) printf '%s' "" ;;
+  esac
+}
+
+# 推送前确保目标 registry 已登录；阿里云跨区域可复用已有 cn-*.aliyuncs.com 凭证。
+ensure_registry_push_auth() {
+  local ref="$1"
+  local host
+  host="$(registry_host_from_ref "$ref")"
+  if [[ -z "$host" || "$host" != *.* ]]; then
+    return 0
+  fi
+
+  local auto="${DOCKER_REGISTRY_AUTO_LOGIN:-1}"
+  local cfg="${DOCKER_CONFIG:-$HOME/.docker}/config.json"
+  local has_auth=0
+  if [[ -f "$cfg" ]] && command -v python3 >/dev/null 2>&1; then
+    if DOCKER_CFG_PATH="$cfg" REGISTRY_HOST="$host" python3 -c \
+      'import json,os,sys; c=json.load(open(os.environ["DOCKER_CFG_PATH"])); sys.exit(0 if os.environ["REGISTRY_HOST"] in c.get("auths",{}) else 1)'; then
+      has_auth=1
+    fi
+  fi
+  if [[ "$has_auth" -eq 1 ]]; then
+    echo "[buildDocker.sh] 推送鉴权: 已登录 $host" >&2
+    return 0
+  fi
+
+  if [[ "$auto" == "0" || "$auto" == "false" || "$auto" == "FALSE" || "$auto" == "off" ]]; then
+    echo "[buildDocker.sh] 错误: 未登录 $host。请先执行: docker login $host" >&2
+    echo "[buildDocker.sh] 说明: 阿里云杭州/青岛等区域 registry 主机名不同，登录态不共享。" >&2
+    return 1
+  fi
+
+  # 尝试从其它已登录的阿里云 ACR 主机复用账号密码。
+  if [[ "$host" == *.aliyuncs.com ]] && [[ -f "$cfg" ]] && command -v python3 >/dev/null 2>&1; then
+    local donor="" user_file=""
+    donor="$(DOCKER_CFG_PATH="$cfg" TARGET_HOST="$host" python3 -c '
+import json, os, base64, sys
+c = json.load(open(os.environ["DOCKER_CFG_PATH"]))
+target = os.environ["TARGET_HOST"]
+for h, v in c.get("auths", {}).items():
+    if h == target or not h.endswith(".aliyuncs.com"):
+        continue
+    auth = v.get("auth") or ""
+    if not auth:
+        continue
+    try:
+        raw = base64.b64decode(auth).decode()
+    except Exception:
+        continue
+    if ":" not in raw:
+        continue
+    print(h)
+    sys.exit(0)
+sys.exit(1)
+' 2>/dev/null || true)"
+    if [[ -n "$donor" ]]; then
+      echo "[buildDocker.sh] 推送鉴权: $host 未登录，尝试复用 $donor 的阿里云凭证…" >&2
+      user_file="$(mktemp "${TMPDIR:-/tmp}/buildDocker-reguser.XXXXXX")" || return 1
+      if ! DOCKER_CFG_PATH="$cfg" DONOR_HOST="$donor" USER_OUT="$user_file" python3 -c '
+import json, os, base64
+c = json.load(open(os.environ["DOCKER_CFG_PATH"]))
+raw = base64.b64decode(c["auths"][os.environ["DONOR_HOST"]]["auth"]).decode()
+user, _pw = raw.split(":", 1)
+open(os.environ["USER_OUT"], "w").write(user)
+' ; then
+        rm -f "$user_file"
+        echo "[buildDocker.sh] 警告: 无法从 $donor 解析凭证" >&2
+      elif DOCKER_CFG_PATH="$cfg" DONOR_HOST="$donor" python3 -c '
+import json, os, base64, sys
+c = json.load(open(os.environ["DOCKER_CFG_PATH"]))
+raw = base64.b64decode(c["auths"][os.environ["DONOR_HOST"]]["auth"]).decode()
+_user, pw = raw.split(":", 1)
+sys.stdout.buffer.write(pw.encode())
+' | docker login "$host" -u "$(cat "$user_file")" --password-stdin >/dev/null 2>&1; then
+        rm -f "$user_file"
+        echo "[buildDocker.sh] 推送鉴权: 已自动登录 $host（凭证来自 $donor）" >&2
+        return 0
+      else
+        rm -f "$user_file"
+        echo "[buildDocker.sh] 警告: 复用 $donor 凭证登录 $host 失败" >&2
+      fi
+    fi
+  fi
+
+  echo "[buildDocker.sh] 错误: 未登录推送目标 registry: $host" >&2
+  echo "[buildDocker.sh] 请先执行: docker login $host" >&2
+  echo "[buildDocker.sh] 说明: 仅登录 registry.cn-hangzhou.aliyuncs.com 不能推送到 registry.cn-qingdao.aliyuncs.com（insufficient_scope）。" >&2
+  return 1
+}
+
+# 对 buildx 去掉易失效的 shell HTTP/SOCKS 代理（daemon 拉镜像不走该代理；buildkit 会继承 env）。
+run_docker_buildx() {
+  local clear="${DOCKER_BUILDX_CLEAR_PROXY:-1}"
+  if [[ "$clear" == "0" || "$clear" == "false" || "$clear" == "FALSE" || "$clear" == "off" ]]; then
+    docker buildx "$@"
+    return $?
+  fi
+  env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY -u all_proxy -u ALL_PROXY \
+    docker buildx "$@"
+}
+
+# 解析可用的 ubuntu:24.04 基础镜像。
+# 若 registry-mirrors 首项是非 pull-through 私有仓，短名 ubuntu:24.04 的 metadata 会 not found；
+# 此时改用镜像站全限定名，绕过 docker.io mirror 链。
+ensure_docker_base_image() {
+  RESOLVED_BASE_IMAGE=""
+  local default_ref="ubuntu:24.04"
+  local pull_timeout_sec="${DOCKER_BASE_IMAGE_PULL_TIMEOUT_SEC:-45}"
+
+  if [[ -n "${DOCKER_BASE_IMAGE:-}" ]]; then
+    RESOLVED_BASE_IMAGE="$DOCKER_BASE_IMAGE"
+    echo "[buildDocker.sh] 使用 DOCKER_BASE_IMAGE=$RESOLVED_BASE_IMAGE" >&2
+    return 0
+  fi
+
+  # 优先全限定镜像站（绕过损坏的 docker.io registry-mirror）；短名放最后且限时，避免长时间挂起。
+  local candidates=()
+  local extra="${DOCKER_BASE_IMAGE_MIRRORS:-docker.m.daocloud.io/library/ubuntu:24.04,docker.1ms.run/library/ubuntu:24.04,dockerhub.icu/library/ubuntu:24.04}"
+  local _oifs=$IFS
+  IFS=','
+  local _c
+  for _c in $extra; do
+    IFS=$_oifs
+    _c="$(trim_spaces "$_c")"
+    [[ -n "$_c" ]] && candidates+=("$_c")
+  done
+  IFS=$_oifs
+  candidates+=("$default_ref")
+
+  local ref
+  for ref in "${candidates[@]}"; do
+    echo "[buildDocker.sh] 探测基础镜像: $ref …" >&2
+    # daemon 侧 pull（不走 shell 代理）；timeout 防止短名经坏 mirror 长时间挂起。
+    if command -v timeout >/dev/null 2>&1; then
+      if timeout "$pull_timeout_sec" docker pull "$ref" >/dev/null 2>&1; then
+        RESOLVED_BASE_IMAGE="$ref"
+        if [[ "$ref" != "$default_ref" ]]; then
+          docker tag "$ref" "$default_ref" >/dev/null 2>&1 || true
+        fi
+        echo "[buildDocker.sh] 基础镜像可用: $RESOLVED_BASE_IMAGE" >&2
+        return 0
+      fi
+    else
+      if docker pull "$ref" >/dev/null 2>&1; then
+        RESOLVED_BASE_IMAGE="$ref"
+        if [[ "$ref" != "$default_ref" ]]; then
+          docker tag "$ref" "$default_ref" >/dev/null 2>&1 || true
+        fi
+        echo "[buildDocker.sh] 基础镜像可用: $RESOLVED_BASE_IMAGE" >&2
+        return 0
+      fi
+    fi
+  done
+
+  if docker image inspect "$default_ref" >/dev/null 2>&1; then
+    # 本机有短名，但 buildx 经坏 mirror 仍可能 metadata not found → 若有任一镜像站本地 tag 则优先用之
+    for ref in "${candidates[@]}"; do
+      [[ "$ref" == "$default_ref" ]] && continue
+      if docker image inspect "$ref" >/dev/null 2>&1; then
+        RESOLVED_BASE_IMAGE="$ref"
+        echo "[buildDocker.sh] 远程拉取失败，改用本机已有 $RESOLVED_BASE_IMAGE" >&2
+        return 0
+      fi
+    done
+    RESOLVED_BASE_IMAGE="$default_ref"
+    echo "[buildDocker.sh] 远程拉取失败，改用本机已有 $default_ref（若仍失败请设 DOCKER_BASE_IMAGE）" >&2
+    return 0
+  fi
+
+  echo "[buildDocker.sh] 错误: 无法解析或拉取基础镜像 ubuntu:24.04。" >&2
+  echo "[buildDocker.sh] 可设置 DOCKER_BASE_IMAGE=docker.m.daocloud.io/library/ubuntu:24.04 后重试。" >&2
+  echo "[buildDocker.sh] 若 /etc/docker/daemon.json 的 registry-mirrors 首项是非 pull-through 私有仓，建议将其移出或后置。" >&2
+  return 1
 }
 
 # 在宿主机拉取 code-server tarball 到 onlineServiceJS/docker/code-server/，供 Dockerfile COPY。
@@ -274,7 +492,10 @@ fi
 
 docker buildx inspect --bootstrap >/dev/null 2>&1 || true
 
+ensure_docker_base_image || exit 1
+
 BUILD_ARGS=( -f "$SCRIPT_DIR/Dockerfile" --build-arg "ENABLE_CODE_SERVER=${ENABLE_CODE_SERVER:-1}" )
+BUILD_ARGS+=( --build-arg "BASE_IMAGE=${RESOLVED_BASE_IMAGE}" )
 SKIP_INT="${SKIP_INTERNAL_APT_MIRROR:-1}"
 if [[ "$SKIP_INT" == "1" || "$SKIP_INT" == "true" || "$SKIP_INT" == "TRUE" ]]; then
   SKIP_INT=1
@@ -292,7 +513,7 @@ if [[ -n "${NPM_REGISTRY:-}" ]]; then
   BUILD_ARGS+=( --build-arg "NPM_REGISTRY=${NPM_REGISTRY}" )
 fi
 
-BX=( docker buildx build )
+BX=( run_docker_buildx build )
 if [[ -n "${DOCKER_BUILDX_BUILDER:-}" ]]; then
   BX+=( --builder "${DOCKER_BUILDX_BUILDER}" )
 fi
@@ -479,9 +700,11 @@ PYCODE
 
 if [[ "$DO_PUSH" -eq 1 ]]; then
   assert_required_push_platforms "$PLATFORMS" "$REQUIRED_PUSH_PLATFORMS"
+  ensure_cross_platform_emulation "$PLATFORMS" || exit 1
 
   if [[ -n "${DOCKER_PUSH_IMAGE:-}" ]]; then
     PUSH_REF="$(resolve_push_ref)"
+    ensure_registry_push_auth "$PUSH_REF" || exit 1
     ensure_code_server_bundles "$PLATFORMS"
     echo "[buildDocker.sh] 构建上下文: $REPO_ROOT" >&2
     echo "[buildDocker.sh] Dockerfile: $SCRIPT_DIR/Dockerfile" >&2
@@ -498,6 +721,7 @@ if [[ "$DO_PUSH" -eq 1 ]]; then
       exit 1
     fi
     base="${DOCKER_REGISTRY_REPOSITORY%/}"
+    ensure_registry_push_auth "$base" || exit 1
     echo "[buildDocker.sh] 构建上下文: $REPO_ROOT" >&2
     echo "[buildDocker.sh] Dockerfile: $SCRIPT_DIR/Dockerfile" >&2
     ensure_code_server_bundles "$PLATFORMS"
@@ -537,6 +761,7 @@ if [[ "$DO_PUSH" -eq 1 ]]; then
   fi
 
   PUSH_REF="$(resolve_push_ref)"
+  ensure_registry_push_auth "$PUSH_REF" || exit 1
   ensure_code_server_bundles "$PLATFORMS"
   echo "[buildDocker.sh] 构建上下文: $REPO_ROOT" >&2
   echo "[buildDocker.sh] Dockerfile: $SCRIPT_DIR/Dockerfile" >&2

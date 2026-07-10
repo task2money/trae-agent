@@ -19,11 +19,15 @@ function parseProvidersJson(raw) {
   return parsed;
 }
 
+function normalizeProviderId(raw) {
+  return String(raw || '').trim().toLowerCase();
+}
+
 function buildModelProvidersSection(providers) {
   const lines = [];
   for (const item of providers) {
     if (!item || typeof item !== 'object') continue;
-    const providerName = String(item.provider || '').trim();
+    const providerName = normalizeProviderId(item.provider);
     if (!providerName) continue;
     const apiKey = String(item.api_key || '').trim() || '<api_key>';
     const baseUrl = String(item.base_url || '').trim() || '<base_url>';
@@ -73,8 +77,8 @@ export function featureParamsEnvToYaml(env) {
     throw new Error('env must be an object');
   }
   const providers = parseProvidersJson(env[TASK_LLM_PROVIDERS_JSON]);
-  const agentModelProvider = String(env[TASK_AGENT_MODEL_PROVIDER] || '').trim() || '<provider>';
-  const summaryModelProvider = String(env[TASK_SUMMARY_MODEL_PROVIDER] || '').trim() || '<provider>';
+  const agentModelProvider = normalizeProviderId(env[TASK_AGENT_MODEL_PROVIDER]) || '<provider>';
+  const summaryModelProvider = normalizeProviderId(env[TASK_SUMMARY_MODEL_PROVIDER]) || '<provider>';
   const agentModel = String(env[TASK_AGENT_MODEL] || '').trim() || '<model>';
   const agentMaxSteps = String(env[TASK_AGENT_MAX_STEPS] || '').trim() || '200';
   const summaryModel = String(env[TASK_SUMMARY_MODEL] || '').trim() || '<model>';

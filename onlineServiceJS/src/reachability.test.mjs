@@ -2,7 +2,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
 
-import { reachabilityFromBusinessEndpointEnv } from './reachability.mjs';
+import {
+  isSaasColocatedWithContainer,
+  reachabilityFromBusinessEndpointEnv,
+  resolveReachableIp,
+} from './reachability.mjs';
 
 const KEYS = [
   'BusinessApiEndPoint',
@@ -11,6 +15,13 @@ const KEYS = [
   'DOCKER_HOST_GATEWAY_IP',
   'PORT',
   'TRAE_HOST_HTTP_PORT',
+  'TRAE_SAAS_COLOCATED',
+  'TRAE_REGISTER_LOOPBACK',
+  'TRAE_PUBLIC_IP',
+  'PUBLIC_IP',
+  'TASK_API_ENDPOINT_ORIGIN',
+  'TASK_API_ENDPOINT',
+  'TaskApiEndPoint',
 ];
 
 function snapshotEnv(keys) {
@@ -90,6 +101,78 @@ test('reachabilityFromBusinessEndpointEnv：域名仍写 :8765 且 TRAE_HOST_HTT
       serverUrl: 'http://debug.aidevpm.com:49152',
       publicIp: null,
     });
+  } finally {
+    restoreEnv(saved);
+  }
+});
+
+test('reachabilityFromBusinessEndpointEnv：loopback BUSINESS_API 返回 null（改走 resolveReachableIp）', () => {
+  const saved = snapshotEnv(KEYS);
+  try {
+    process.env.BUSINESS_API_ENDPOINT = 'http://127.0.0.1:8765/api';
+    delete process.env.BusinessApiEndPoint;
+    assert.equal(reachabilityFromBusinessEndpointEnv(), null);
+  } finally {
+    restoreEnv(saved);
+  }
+});
+
+test('isSaasColocatedWithContainer：TRAE_SAAS_COLOCATED 显式开启', () => {
+  const saved = snapshotEnv(KEYS);
+  try {
+    delete process.env.TASK_API_ENDPOINT_ORIGIN;
+    delete process.env.TASK_API_ENDPOINT;
+    delete process.env.TaskApiEndPoint;
+    delete process.env.TRAE_REGISTER_LOOPBACK;
+    process.env.TRAE_SAAS_COLOCATED = '1';
+    assert.equal(isSaasColocatedWithContainer(), true);
+  } finally {
+    restoreEnv(saved);
+  }
+});
+
+test('isSaasColocatedWithContainer：TASK_API_ENDPOINT_ORIGIN 为 loopback 时同机', () => {
+  const saved = snapshotEnv(KEYS);
+  try {
+    delete process.env.TRAE_SAAS_COLOCATED;
+    delete process.env.TRAE_REGISTER_LOOPBACK;
+    process.env.TASK_API_ENDPOINT_ORIGIN = 'http://127.0.0.1:8011';
+    assert.equal(isSaasColocatedWithContainer(), true);
+  } finally {
+    restoreEnv(saved);
+  }
+});
+
+test('isSaasColocatedWithContainer：公网 TASK_API 非同机', () => {
+  const saved = snapshotEnv(KEYS);
+  try {
+    delete process.env.TRAE_SAAS_COLOCATED;
+    delete process.env.TRAE_REGISTER_LOOPBACK;
+    process.env.TASK_API_ENDPOINT_ORIGIN = 'http://203.0.113.8:8011';
+    assert.equal(isSaasColocatedWithContainer(), false);
+  } finally {
+    restoreEnv(saved);
+  }
+});
+
+test('resolveReachableIp：仅认 TRAE_PUBLIC_IP / PUBLIC_IP，不探测外网', async () => {
+  const saved = snapshotEnv(KEYS);
+  try {
+    delete process.env.TRAE_PUBLIC_IP;
+    delete process.env.PUBLIC_IP;
+    await assert.rejects(
+      () => resolveReachableIp(),
+      (err) => {
+        assert.match(String(err?.message || err), /TRAE_PUBLIC_IP|PUBLIC_IP/);
+        assert.doesNotMatch(String(err?.message || err), /ipw\.cn|ipip\.net/);
+        return true;
+      },
+    );
+    process.env.TRAE_PUBLIC_IP = '203.0.113.10';
+    assert.equal(await resolveReachableIp(), '203.0.113.10');
+    delete process.env.TRAE_PUBLIC_IP;
+    process.env.PUBLIC_IP = '203.0.113.11';
+    assert.equal(await resolveReachableIp(), '203.0.113.11');
   } finally {
     restoreEnv(saved);
   }

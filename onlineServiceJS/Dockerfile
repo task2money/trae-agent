@@ -8,8 +8,11 @@
 # 构建阶段已调高 fetch-retries / 超时，降低 arm64 等环境下偶发断连失败率。
 # 多阶段：编译型 Python 依赖仅在 pydeps 阶段安装，最终镜像不含 build-essential / python3.12-dev。
 # ENABLE_CODE_SERVER=1 安装 code-server；运行时 CODE_SERVER_ENABLED=1 启动。
+# BASE_IMAGE：默认 ubuntu:24.04。若 daemon registry-mirrors 首项为非 pull-through 私有仓
+# （对 library/ubuntu 返回 not found），buildDocker.sh 会改传可直连镜像站全限定名。
 
-FROM ubuntu:24.04 AS pydeps
+ARG BASE_IMAGE=ubuntu:24.04
+FROM ${BASE_IMAGE} AS pydeps
 
 ARG DEBIAN_FRONTEND=noninteractive
 ARG TARGETARCH
@@ -39,6 +42,10 @@ RUN set -eux; \
     apt-get clean; rm -rf /var/lib/apt/lists/*
 
 ENV PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+# 阿里云作兜底：清华偶发 DNS/超时导致 pydantic-core 等二进制包不可见时，pip 会误报 ResolutionImpossible。
+ENV PIP_EXTRA_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
+ENV PIP_DEFAULT_TIMEOUT=120
+ENV PIP_RETRIES=10
 
 WORKDIR /app
 COPY pyproject.toml README.md /app/
@@ -47,12 +54,13 @@ COPY trae_agent_online /app/trae_agent_online
 
 RUN python3.12 -m venv /app/.venv \
     && /app/.venv/bin/pip install --no-cache-dir --upgrade pip \
-    && /app/.venv/bin/pip install --no-cache-dir . \
+    && /app/.venv/bin/pip install --no-cache-dir --prefer-binary . \
     && /app/.venv/bin/python -c "import sys; assert sys.version_info[:2] >= (3, 12), sys.version"
 
 
 # code-server：COPY 本地预下载 tarball 并在本阶段解压，最终镜像由后续阶段仅 COPY 目录，不包含 .tar.gz 层体积。
-FROM ubuntu:24.04 AS code_server_local
+ARG BASE_IMAGE=ubuntu:24.04
+FROM ${BASE_IMAGE} AS code_server_local
 
 ARG ENABLE_CODE_SERVER=1
 ARG TARGETARCH
@@ -79,7 +87,8 @@ RUN set -eux; \
     /opt/code-server/bin/code-server --version
 
 
-FROM ubuntu:24.04
+ARG BASE_IMAGE=ubuntu:24.04
+FROM ${BASE_IMAGE}
 
 ARG DEBIAN_FRONTEND=noninteractive
 ARG ENABLE_CODE_SERVER=1

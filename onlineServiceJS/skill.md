@@ -18,7 +18,7 @@
 | `CODE_SERVER_ENABLED` | 可选。设为 `1`/`true` 时在容器内后台启动 **code-server**（VS Code Web），监听 **8888**；工作目录见 `CODE_SERVER_WORKDIR`（默认 `/app`）。模拟启动时 `docker run` 会映射 `8888`→宿主机动态端口，日志中给出 `http://127.0.0.1:<端口>/`。`--auth none`，仅适合本机 mock。 |
 | `CODE_SERVER_WORKDIR` | 可选。code-server 打开的根目录，默认 `/app`（含 `trae_agent` 与 `onlineServiceJS`）。 |
 
-Dockerfile 基于 **ubuntu:24.04**（多阶段构建 Python venv；主软件源见 `onlineServiceJS/Dockerfile` 头部注释）。系统 Python 为 3.12，业务 venv 为 `/app/.venv`。构建参数 `ENABLE_CODE_SERVER=0` 可跳过 code-server 以缩短构建时间。
+Dockerfile 基于 **ubuntu:24.04**（可通过构建参数 `BASE_IMAGE` / 环境变量 `DOCKER_BASE_IMAGE` 覆盖；`buildDocker.sh` 在 docker.io 经损坏的 registry-mirror 解析失败时会自动回退到镜像站全限定名）。多阶段构建 Python venv；主软件源见 `onlineServiceJS/Dockerfile` 头部注释。系统 Python 为 3.12，业务 venv 为 `/app/.venv`。构建参数 `ENABLE_CODE_SERVER=0` 可跳过 code-server 以缩短构建时间。
 
 容器换票、引导克隆等仍可使用：`TaskApiEndPoint`、`BusinessApiEndPoint`、`BUSINESS_API_ENDPOINT`、`tenantId`、`workspaceId`、`taskId`、`ACCESS_TOKEN`（与任务云约定一致；**完整协议**见 `task2app/Saas_project/skillList/machine_container.md`）。**`TaskApiEndPoint` 推荐**为 `…/api/tenant/…/workspace/…/task/…/cloud`；**容错**：`saasTaskCloud.mjs` 的 `taskApiPrefix()` 亦可从 pathname 解析 **`/tenant/…/task-detail/<task>/`**（浏览器任务详情页 URL）及 **`/api/…/task-detail/<task>`**，避免未设三环境变量时换票失败、`container_refresh_token` 不落库。**启动就绪日志**：标准输出含 **`[onlineServiceJS] server listening on http://0.0.0.0:<PORT>`**，供编排检测。监听成功后**先** `register-reachability`（写入 `server_url`）并启动 **SaaS 心跳**，再**异步**执行引导克隆与 `service_config.yaml` 写入，避免长时间 `git clone` 阻塞任务详情拉层图与心跳。
 
@@ -92,7 +92,7 @@ Dockerfile 基于 **ubuntu:24.04**（多阶段构建 Python venv；主软件源�
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| `POST` | `/api/repos/reclone` | JSON：`repo_url`（必填）、`ephemeral_ssh_private_key`（可选）。在引导层（或首个含 git 的层）内删除对应子目录并重新 `git clone`。 |
+| `POST` | `/api/repos/reclone` | JSON：`repo_url`（必填）、`ephemeral_ssh_private_key`（可选）。在引导层（或首个含 git 的层）内删除对应子目录并重新 `git clone`。SSH URL 在有 OAuth 凭证时规范为 `https_clone_url` 再 HTTPS 克隆（与 bootstrap 一致）。 |
 
 ## 执行流（Exec Streams）
 
@@ -209,7 +209,8 @@ Dockerfile 基于 **ubuntu:24.04**（多阶段构建 Python venv；主软件源�
 
 ## Web 控制台
 
-- **入口**：`GET /ui/{access_token}` — 路径令牌须与 `ACCESS_TOKEN` 一致，否则 **401**。本地开发可设 `ACCESS_TOKEN=dev-local-token`，页面为 **`http://localhost:8765/ui/dev-local-token`**。
+- **入口**：`GET /ui/{access_token}` — 路径令牌须与当前 `ACCESS_TOKEN` 一致；若路径为换票前已记住的 bootstrap/旧 token，则 **302** 到 `/ui/{当前 ACCESS_TOKEN}`。未知 token 仍 **401**。本地开发可设 `ACCESS_TOKEN=dev-local-token`，页面为 **`http://localhost:8765/ui/dev-local-token`**。
+- **会话恢复**：`GET /api/session/ui-redirect`（query 或 `X-Access-Token`）在「当前或已记住旧 token」下返回 `{ access_token, ui_path, redirected }`，供打开中的控制台在 SSE 401 后自愈跳转。
 - **富文本呈现声明（表驱动 + 编辑器契约）**：控制台步骤区等按 JSON **声明各字段如何渲染**（纯文本 / 富文本 iframe 等），数据来自 **`GET /api/ui/agent-render-hints`**（查询参数或 `X-Access-Token` 与受保护 API 一致）。响应内 **`rich_text_editor`** 块提供与 **`sanitizeMachineContainerHtml`（`src/htmlSanitize.mjs`）逐字段一致** 的 **`html_allowlist`**（标签与属性表），供富文本编辑器配置白名单、导出校验或与 `presentation_modes.rich_iframe` 对齐；人读约定仍以业务侧 `machine_container.md` §7 为准。浏览器可在 **`GET /ui/{access_token}/render-hints`** 新窗口查看格式化后的该 JSON（与上述 API 同源）。
 - Docker 镜像从构建上下文复制 **`onlineServiceJS/static`**（与本包同源）；若缺少静态文件，返回简易 HTML 提示。
 - **页眉**：展示 **`REPO_ROOT`** 宿主仓库未推送提交数依赖 `GET /api/dev/service-repo-git-push`。**当前为占位响应**（不跑 `git rev-list`）。

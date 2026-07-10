@@ -8,6 +8,7 @@ import YAML from 'yaml';
 import { spawn, spawnSync } from 'child_process';
 
 import { authMiddleware, accessTokenExpected } from './auth.mjs';
+import { resolveUiPathAccessToken, isRememberedStaleAccessToken, rememberStaleAccessToken } from './uiAccessToken.mjs';
 import { getAgentRenderHints } from './agentRenderHints.mjs';
 import { serviceRoot, configFilePath, repoRoot, logsDir } from './paths.mjs';
 import { createScopedTaskApiRewriteMiddleware } from './scopedTaskApiPath.mjs';
@@ -29,6 +30,8 @@ import {
   clearCloneLayerLog,
   startupEmptyLayerId,
   appendCloneLayerLog,
+  prepareOauthHttpsGitClone,
+  fetchRepoCloneCredentialsOnly,
 } from './bootstrap.mjs';
 import { registerReachabilityAfterBootstrap } from './reachability.mjs';
 import {
@@ -41,6 +44,7 @@ import {
   isRetryableGitCloneFailure,
   runGitCloneWithProgress,
   startSaasContainerHeartbeatLoop,
+  startSaasLayerGraphPushLoop,
 } from './saasTaskCloud.mjs';
 import {
   getExecStreamManifest,
@@ -346,7 +350,11 @@ app.get('/skill.md', (req, res) => {
 
 app.get('/ui/:access_token', (req, res) => {
   const expected = accessTokenExpected();
-  if (!expected || req.params.access_token !== expected) {
+  const resolved = resolveUiPathAccessToken(req.params.access_token, expected);
+  if (resolved.redirectTo) {
+    return res.redirect(302, resolved.redirectTo);
+  }
+  if (!resolved.ok) {
     return res.status(401).json({ detail: 'Invalid or missing access token' });
   }
   const staticIndex = path.join(serviceRoot(), 'static', 'index.html');
@@ -359,14 +367,19 @@ app.get('/ui/:access_token', (req, res) => {
       );
   }
   let raw = fs.readFileSync(staticIndex, 'utf8');
-  raw = raw.replace('__ACCESS_TOKEN_JSON__', JSON.stringify(req.params.access_token));
+  // 始终注入当前 ACCESS_TOKEN，避免路径与 env 短暂不一致。
+  raw = raw.replace('__ACCESS_TOKEN_JSON__', JSON.stringify(resolved.serveToken));
   res.type('html').send(raw);
 });
 
 /** 新窗口查看「富文本呈现声明」JSON（与 GET /api/ui/agent-render-hints 同源数据） */
 app.get('/ui/:access_token/render-hints', (req, res) => {
   const expected = accessTokenExpected();
-  if (!expected || req.params.access_token !== expected) {
+  const resolved = resolveUiPathAccessToken(req.params.access_token, expected);
+  if (resolved.redirectTo) {
+    return res.redirect(302, `${resolved.redirectTo}/render-hints`);
+  }
+  if (!resolved.ok) {
     return res.status(401).json({ detail: 'Invalid or missing access token' });
   }
   const p = path.join(serviceRoot(), 'static', 'render-hints.html');
@@ -374,7 +387,7 @@ app.get('/ui/:access_token/render-hints', (req, res) => {
     return res.status(404).type('text/plain').send('render-hints.html missing');
   }
   let raw = fs.readFileSync(p, 'utf8');
-  raw = raw.replace('__ACCESS_TOKEN_JSON__', JSON.stringify(req.params.access_token));
+  raw = raw.replace('__ACCESS_TOKEN_JSON__', JSON.stringify(resolved.serveToken));
   res.type('html').send(raw);
 });
 
@@ -382,6 +395,29 @@ app.use('/static', express.static(path.join(serviceRoot(), 'static')));
 
 const api = express.Router();
 api.use(authMiddleware);
+
+/**
+ * 打开中的控制台页若仍持有换票前 bootstrap token，SSE 会 401。
+ * 本接口在「当前 token 或已记住的旧 token」下返回应跳转的 /ui/{current}。
+ * 挂在 authMiddleware 之前需单独校验。
+ */
+app.get('/api/session/ui-redirect', (req, res) => {
+  const expected = accessTokenExpected();
+  if (!expected) {
+    return res.status(503).json({ detail: 'ACCESS_TOKEN not configured' });
+  }
+  const q = req.query?.access_token;
+  const h = req.headers['x-access-token'];
+  const tok = (typeof q === 'string' ? q : '') || (typeof h === 'string' ? h : '');
+  if (!tok || (tok !== expected && !isRememberedStaleAccessToken(tok))) {
+    return res.status(401).json({ detail: 'Invalid or missing access token' });
+  }
+  res.json({
+    access_token: expected,
+    ui_path: `/ui/${encodeURIComponent(expected)}`,
+    redirected: tok !== expected,
+  });
+});
 
 api.get('/events/stream', (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
@@ -712,13 +748,6 @@ api.post('/repos/reclone', async (req, res) => {
   let target = path.join(layerPath(layerId), name);
   if (fs.existsSync(target)) fs.rmSync(target, { recursive: true, force: true });
   fs.mkdirSync(target, { recursive: true });
-  const env = {
-    ...process.env,
-    GIT_TERMINAL_PROMPT: '0',
-    GIT_HTTP_IPV4: String(process.env.GIT_HTTP_IPV4 || '1'),
-  };
-  const cloneUrl = repoUrl;
-  const gitArgs = buildGitCloneArgs(cloneUrl, { branch: '', depth: null });
   let prefix = null;
   try {
     prefix = taskApiPrefix();
@@ -729,14 +758,52 @@ api.post('/repos/reclone', async (req, res) => {
 
   const runRecloneInBackground = () => {
     void (async () => {
+      let cleanupAskpass = () => {};
       try {
         if (prefix && accessToken) {
           await postCloneProgress(prefix, accessToken, 0, `【重新克隆】开始 ${name}…`, repoUrl, {
             phase: 'reclone',
           });
         }
+        let credRoot = {};
+        if (prefix && accessToken) {
+          try {
+            credRoot = await fetchRepoCloneCredentialsOnly(prefix, accessToken, 30);
+          } catch (credErr) {
+            appendOutboundReqLog(
+              `reclone: repo-clone-credentials failed: ${credErr instanceof Error ? credErr.message : String(credErr)}`,
+            );
+          }
+        }
+        const prepared = prepareOauthHttpsGitClone(repoUrl, credRoot);
+        cleanupAskpass = prepared.cleanup;
+        const cloneRemote = prepared.cloneRemote;
+        if (prepared.normalizedFromSsh) {
+          appendOutboundReqLog(
+            `reclone remote normalized ssh→https from=${repoUrl} to=${cloneRemote}`,
+          );
+        }
+        if (prepared.httpAuth) {
+          const provider =
+            prepared.credential && typeof prepared.credential === 'object'
+              ? String(prepared.credential.provider || '').trim()
+              : '';
+          appendOutboundReqLog(
+            `reclone auth repo=${repoUrl} clone=${cloneRemote} provider=${provider || 'unknown'} git_http_username=${prepared.httpAuth.username}`,
+          );
+        }
+        const env = {
+          ...process.env,
+          GIT_TERMINAL_PROMPT: '0',
+          GIT_HTTP_IPV4: String(process.env.GIT_HTTP_IPV4 || '1'),
+          ...prepared.envPatch,
+        };
+        const gitArgs = buildGitCloneArgs(cloneRemote, { branch: '', depth: null });
         try {
-          appendCloneLayerLog(layerId, `\n━━ 重新克隆 ${repoUrl}\n→ ${name}\n`);
+          appendCloneLayerLog(
+            layerId,
+            `\n━━ 重新克隆 ${repoUrl}${cloneRemote !== repoUrl ? ` → ${cloneRemote}` : ''}\n→ ${name}\n`,
+          );
         } catch {
           /* ignore */
         }
@@ -804,7 +871,7 @@ api.post('/repos/reclone', async (req, res) => {
         try {
           const metaPath = path.join(layerPath(layerId), 'layer_meta.json');
           const existingMeta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
-          existingMeta.clone_url = String(repoUrl).trim();
+          existingMeta.clone_url = String(cloneRemote || repoUrl).trim();
           fs.writeFileSync(metaPath, JSON.stringify(existingMeta, null, 2), 'utf8');
         } catch {
           /* ignore */
@@ -843,6 +910,8 @@ api.post('/repos/reclone', async (req, res) => {
         } catch {
           /* ignore */
         }
+      } finally {
+        cleanupAskpass();
       }
     })();
   };
@@ -1762,6 +1831,14 @@ api.get('/project/active', (req, res) => {
 
 app.use('/api', api);
 
+/** 测试/本地：预置换票前旧 token，便于 Playwright 验证 /ui 302 与 session/ui-redirect。 */
+for (const t of String(process.env.TRAE_UI_STALE_ACCESS_TOKENS || '')
+  .split(',')
+  .map((x) => x.trim())
+  .filter(Boolean)) {
+  rememberStaleAccessToken(t);
+}
+
 const port = parseInt(process.env.PORT || '8765', 10);
 const host = '0.0.0.0';
 
@@ -1828,6 +1905,11 @@ export async function main({
         console.log(
           `[onlineServiceJS] 已调度 SaaS 容器心跳（首跳延迟 ${hbDelay}s，间隔见 TRAE_SAAS_HEARTBEAT_INTERVAL_SEC）`,
         );
+        startSaasLayerGraphPushLoop(() => buildLayersSnapshot(bootstrapCloneLayerId));
+        const lgDelay = String(process.env.TRAE_SAAS_LAYER_GRAPH_PUSH_INITIAL_DELAY_SEC || '8').trim();
+        console.log(
+          `[onlineServiceJS] 已调度 SaaS 层图推送（首跳延迟 ${lgDelay}s，间隔见 TRAE_SAAS_LAYER_GRAPH_PUSH_INTERVAL_SEC）`,
+        );
       }
       void (async () => {
         try {
@@ -1846,6 +1928,11 @@ export async function main({
             /* 推层图至任务云为辅助通道，失败不阻断服务 */
           }
         } catch (e) {
+          const msg = String(e?.message || e || 'bootstrap failed').slice(0, 800);
+          // 与 bootstrap.mjs 的 BOOTSTRAP_FAILED 并列，确保失败一定出现在 relay 启动日志面板。
+          if (!msg.includes('BOOTSTRAP_FAILED')) {
+            console.error(`[onlineServiceJS] BOOTSTRAP_FAILED phase=post_listen ${msg}`);
+          }
           console.error('[onlineServiceJS] bootstrap (post-listen) error:', e);
           if (strict) process.exit(1);
         }

@@ -1,13 +1,9 @@
 /**
- * 解析宿主机可达 IP（公网或本网段）与映射端口，向 SaaS 注册 CloudServerConfig（register-reachability）。
+ * 解析宿主机可达 IP 与映射端口，向 SaaS 注册 CloudServerConfig（register-reachability）。
+ * 公网 IP **仅**来自启动注入的环境变量（UserData / go_relay / docker -e），镜像内禁止写死或外网探测。
  */
-import os from 'os';
-
 import {
   appendOutboundReqLog,
-  sanitizeUrlForOutboundLog,
-  isDebugAgentEnabled,
-  debugAgentStringify,
 } from './outboundReqLog.mjs';
 import { postJson, rewriteDockerInternal, taskApiPrefix } from './saasTaskCloud.mjs';
 
@@ -93,8 +89,15 @@ export function reachabilityFromBusinessEndpointEnv() {
   }
   applyHostMappedPortIfIpLikeHost(u);
   applyHostMappedPortWhenBusinessEndpointUsesContainerDefault(u);
+  const hostName = String(u.hostname || '').trim().toLowerCase();
+  // Loopback is not browser/SaaS reachable; fall through to resolveReachableIp().
+  if (hostName === '127.0.0.1' || hostName === 'localhost' || hostName === '::1' || hostName === '0.0.0.0') {
+    appendOutboundReqLog(
+      `reachability: ignore loopback BUSINESS_API_ENDPOINT host=${hostName}; will resolve reachable IP`,
+    );
+    return null;
+  }
   const businessApiEndpoint = normalizeUrlNoTrailingSlash(u.href);
-  const hostName = String(u.hostname || '').trim();
   const ipLikeHost =
     /^\d{1,3}(?:\.\d{1,3}){3}$/.test(hostName) || hostName.includes(':');
   const publicIp = ipLikeHost ? hostName : null;
@@ -110,84 +113,19 @@ export function reachabilityFromBusinessEndpointEnv() {
   return { businessApiEndpoint, serverUrl, publicIp };
 }
 
-const _IPV4_RE = /\b(\d{1,3}(?:\.\d{1,3}){3})\b/;
-
 /**
- * 国内常用公网 IPv4 查询（避免依赖境外 api.ipify.org）。
- * @param {number} [timeoutMs]
- * @returns {Promise<string|null>}
- */
-async function fetchPublicIpv4Domestic(timeoutMs = 4500) {
-  async function query(url, parse) {
-    const safe = sanitizeUrlForOutboundLog(url);
-    const ac = new AbortController();
-    const timer = setTimeout(() => ac.abort(), timeoutMs);
-    const t0 = Date.now();
-    try {
-      if (isDebugAgentEnabled()) {
-        appendOutboundReqLog(
-          `DEBUG_AGENT outbound request method=GET url=${url} headers=${debugAgentStringify({})} body=${debugAgentStringify(null)}`,
-        );
-      }
-      const r = await fetch(url, { signal: ac.signal });
-      const body = await r.text();
-      if (isDebugAgentEnabled()) {
-        appendOutboundReqLog(
-          `DEBUG_AGENT outbound response method=GET url=${url} status=${r.status} headers=${debugAgentStringify(Object.fromEntries(r.headers.entries()))} body=${body}`,
-        );
-      }
-      appendOutboundReqLog(`reachability GET ${safe} -> HTTP ${r.status} ${Date.now() - t0}ms`);
-      if (!r.ok) return null;
-      return parse(body);
-    } catch (e) {
-      appendOutboundReqLog(
-        `reachability GET ${safe} -> error ${String(e?.message || e).slice(0, 240)} ${Date.now() - t0}ms`,
-      );
-      return null;
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-
-  let ip = await query('https://4.ipw.cn', (t) => {
-    const s = t.trim();
-    if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(s)) return s;
-    const m = s.match(_IPV4_RE);
-    return m ? m[1] : null;
-  });
-  if (ip) return ip;
-
-  ip = await query('https://myip.ipip.net', (text) => {
-    const m =
-      text.match(/(?:当前\s*IP|IP)[：:]\s*(\d{1,3}(?:\.\d{1,3}){3})/) || text.match(_IPV4_RE);
-    return m ? m[1] : null;
-  });
-  return ip || null;
-}
-
-/**
+ * 公网/可达 IP 仅认启动注入的环境变量（UserData / relay / docker -e）。
+ * 禁止镜像内写死 IP，也禁止 ipw.cn / 网卡自动探测（易拿到错误 EIP）。
  * 不使用 127.0.0.1 作为隐式回退；无法解析时抛错，由调用方退出进程。
  * @returns {Promise<string>}
  */
-async function resolveReachableIp() {
+export async function resolveReachableIp() {
   const fromEnv = String(process.env.TRAE_PUBLIC_IP || process.env.PUBLIC_IP || '').trim();
   if (fromEnv) return fromEnv;
 
-  const wan = await fetchPublicIpv4Domestic();
-  if (wan) return wan;
-
-  const nets = os.networkInterfaces();
-  for (const name of Object.keys(nets)) {
-    for (const net of nets[name] || []) {
-      if (net && net.family === 'IPv4' && !net.internal) {
-        return net.address;
-      }
-    }
-  }
-
   throw new Error(
-    '无法解析可达 IP（已禁用回退 127.0.0.1）：请设置环境变量 TRAE_PUBLIC_IP 或 PUBLIC_IP，' +
-      '或确保本机能访问国内公网 IP 查询接口（https://4.ipw.cn / https://myip.ipip.net）且存在非回环 IPv4 网卡地址'
+    '无法解析可达 IP（已禁用回退 127.0.0.1 与外网/网卡探测）：请由 UserData 或编排注入环境变量 TRAE_PUBLIC_IP / PUBLIC_IP，' +
+      '或设置非 loopback 的 BUSINESS_API_ENDPOINT / BusinessApiEndPoint（host 为 IP 时可提取 public_ip）',
   );
 }
 
@@ -199,6 +137,41 @@ export function hostMappedHttpPort() {
     if (Number.isFinite(n) && n > 0) return n;
   }
   return parseInt(process.env.PORT || '8765', 10) || 8765;
+}
+
+function envTruthy(name) {
+  return ['1', 'true', 'yes', 'on'].includes(String(process.env[name] || '').trim().toLowerCase());
+}
+
+function isLoopbackHostname(host) {
+  const h = String(host || '')
+    .trim()
+    .toLowerCase();
+  return h === '127.0.0.1' || h === 'localhost' || h === '::1' || h === '0.0.0.0';
+}
+
+/**
+ * SaaS（taskCloudService / gateway）与容器同机时，register-reachability 的 server_url
+ * 必须用 loopback，供心跳与 container-target 转发；公网 IP 仅写入 public_ip / vscode URL。
+ * 触发：TRAE_SAAS_COLOCATED / TRAE_REGISTER_LOOPBACK，或 TASK_API_ENDPOINT_ORIGIN 指向 loopback。
+ */
+export function isSaasColocatedWithContainer() {
+  if (envTruthy('TRAE_SAAS_COLOCATED') || envTruthy('TRAE_REGISTER_LOOPBACK')) {
+    return true;
+  }
+  const raw = String(
+    process.env.TASK_API_ENDPOINT_ORIGIN ||
+      process.env.TASK_API_ENDPOINT ||
+      process.env.TaskApiEndPoint ||
+      '',
+  ).trim();
+  if (!raw) return false;
+  try {
+    const withScheme = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(raw) ? raw : `http://${raw}`;
+    return isLoopbackHostname(new URL(withScheme).hostname);
+  } catch {
+    return false;
+  }
 }
 
 function hostMappedVscodePort() {
@@ -246,12 +219,32 @@ export async function registerReachabilityAfterBootstrap(ctx) {
   const timeoutSec = Math.max(1, ctx.timeout || parseFloat(process.env.TASK_API_BOOTSTRAP_TIMEOUT_SEC || '5') || 5);
 
   const fromBusiness = reachabilityFromBusinessEndpointEnv();
-  const pip = fromBusiness ? fromBusiness.publicIp : await resolveReachableIp();
+  const colocated = isSaasColocatedWithContainer();
+  // 浏览器/元数据用公网 IP；同机 SaaS 探测另用 loopback（见下方 serverUrl 覆盖）。
+  let pip = fromBusiness ? fromBusiness.publicIp : null;
+  if (!pip) {
+    try {
+      pip = await resolveReachableIp();
+    } catch (e) {
+      if (!colocated) throw e;
+      appendOutboundReqLog(
+        `reachability: resolveReachableIp failed under colocated SaaS (${String(e?.message || e).slice(0, 200)}); public_ip omitted`,
+      );
+      pip = null;
+    }
+  }
   const httpPort = hostMappedHttpPort();
   const vscodePort = hostMappedVscodePort();
 
-  const serverUrl = fromBusiness?.serverUrl || buildHttpUrl(pip, httpPort);
-  const biz = fromBusiness?.businessApiEndpoint || buildHttpUrl(pip, httpPort, '/api');
+  let serverUrl = fromBusiness?.serverUrl || buildHttpUrl(pip, httpPort);
+  let biz = fromBusiness?.businessApiEndpoint || buildHttpUrl(pip, httpPort, '/api');
+  if (colocated) {
+    serverUrl = buildHttpUrl('127.0.0.1', httpPort);
+    biz = buildHttpUrl('127.0.0.1', httpPort, '/api');
+    appendOutboundReqLog(
+      `reachability: SaaS colocated → register server_url=${serverUrl} (public_ip=${pip || '(none)'} for browser metadata)`,
+    );
+  }
   const vscodeUrl = vscodePort != null && pip ? buildHttpUrl(pip, vscodePort, '/') : '';
 
   const body = {

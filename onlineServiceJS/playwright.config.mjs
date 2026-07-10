@@ -39,7 +39,10 @@ export default {
     },
     {
       name: 'cdp9222',
-      testMatch: '**/branch-graph-cdp.spec.mjs',
+      testMatch: [
+        '**/branch-graph-cdp.spec.mjs',
+        '**/ui-stale-token-redirect.cdp.spec.mjs',
+      ],
       /* 浏览器由外部 Chrome --remote-debugging-port=9222 提供；无需 channel */
       use: {},
     },

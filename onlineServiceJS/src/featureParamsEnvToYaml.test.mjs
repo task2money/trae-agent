@@ -38,3 +38,19 @@ test('featureParamsEnvToYaml uses defaults for empty providers', () => {
   assert.match(yaml, /<provider>:/);
   assert.match(yaml, /max_steps: 200/);
 });
+
+test('featureParamsEnvToYaml lowercases provider identifiers', () => {
+  const yaml = featureParamsEnvToYaml({
+    TASK_LLM_PROVIDERS_JSON:
+      '[{"provider":"deepSeek","api_key":"sk-ds","base_url":"https://api.deepseek.com","supported_models":["deepseek-v4-pro"],"use_sub_token":false}]',
+    TASK_AGENT_MODEL: 'deepseek-v4-pro',
+    TASK_AGENT_MODEL_PROVIDER: 'deepSeek',
+    TASK_AGENT_MAX_STEPS: '200',
+    TASK_SUMMARY_MODEL: 'deepseek-v4-flash',
+    TASK_SUMMARY_MODEL_PROVIDER: 'deepSeek',
+  });
+  assert.match(yaml, /    deepseek:/);
+  assert.match(yaml, /provider: deepseek/);
+  assert.match(yaml, /model_provider: deepseek/);
+  assert.doesNotMatch(yaml, /deepSeek/);
+});

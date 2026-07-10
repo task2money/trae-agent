@@ -86,8 +86,26 @@ function isRetryableLoopbackFetchError(err) {
     msg.includes('fetch failed') ||
     msg.includes('socket hang up') ||
     msg.includes('connection reset') ||
-    msg.includes('connection refused')
+    msg.includes('connection refused') ||
+    msg.includes('und_err_socket') ||
+    msg.includes('other side closed')
   );
+}
+
+/**
+ * TaskApi 瞬时断连重试次数（含首次）。默认 5：覆盖 runAll 重启/端口短暂不可达窗口。
+ * 环境变量 `TASK_API_POST_JSON_TRANSIENT_RETRIES`。
+ */
+export function postJsonTransientRetryConfigFromEnv() {
+  const retriesRaw = parseInt(String(process.env.TASK_API_POST_JSON_TRANSIENT_RETRIES || '5'), 10);
+  const backoffRaw = parseInt(String(process.env.TASK_API_POST_JSON_TRANSIENT_BACKOFF_MS || '400'), 10);
+  const maxAttempts = Number.isFinite(retriesRaw) ? Math.max(1, Math.min(20, retriesRaw)) : 5;
+  const backoffMs = Number.isFinite(backoffRaw) ? Math.max(50, Math.min(10000, backoffRaw)) : 400;
+  return { maxAttempts, backoffMs };
+}
+
+function sleepMs(ms) {
+  return new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(ms) || 0)));
 }
 
 /** 容器心跳 POST 的 reqLogs 文件名（与其它出站 outbound.log 分离） */
@@ -110,87 +128,107 @@ export async function postJson(url, body, timeoutSec = 8, opts = {}) {
   const fallbackUrl = loopbackFallbackUrl(url);
   const safeFallbackUrl = fallbackUrl ? sanitizeUrlForOutboundLog(fallbackUrl) : '';
   const t0 = Date.now();
-  const ac = new AbortController();
-  const t = setTimeout(() => ac.abort(), timeoutSec * 1000);
   const logOpts = reqLogFile ? { filename: reqLogFile } : {};
-  const attempts = [url];
-  if (fallbackUrl && fallbackUrl !== url) attempts.push(fallbackUrl);
-  let idx = 0;
-  try {
-    while (idx < attempts.length) {
-      const targetUrl = attempts[idx];
-      const safeTargetUrl = sanitizeUrlForOutboundLog(targetUrl);
-      const headers = traceHeadersForOutbound(outboundTraceId, outboundSpanId);
-      try {
-        if (isDebugAgentEnabled()) {
-          appendOutboundReqLog(
-            `DEBUG_AGENT outbound request method=POST url=${targetUrl} headers=${debugAgentStringify(headers)} body=${debugAgentStringify(body)}`,
-            logOpts,
-          );
-        }
-        const r = await fetch(targetUrl, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify(body),
-          signal: ac.signal,
-        });
-        const text = await r.text();
-        if (isDebugAgentEnabled()) {
-          appendOutboundReqLog(
-            `DEBUG_AGENT outbound response method=POST url=${targetUrl} status=${r.status} headers=${debugAgentStringify(Object.fromEntries(r.headers.entries()))} body=${text}`,
-            logOpts,
-          );
-        }
-        const ms = Date.now() - t0;
-        appendOutboundReqLog(`postJson POST ${safeTargetUrl} -> HTTP ${r.status} ${ms}ms`, logOpts);
-        let data = {};
+  const hostAttempts = [url];
+  if (fallbackUrl && fallbackUrl !== url) hostAttempts.push(fallbackUrl);
+  const { maxAttempts, backoffMs } = postJsonTransientRetryConfigFromEnv();
+  let lastErr = null;
+
+  for (let round = 1; round <= maxAttempts; round += 1) {
+    // 每轮独立超时，避免瞬时重试吃掉整段 timeout
+    const ac = new AbortController();
+    const t = setTimeout(() => ac.abort(), timeoutSec * 1000);
+    let idx = 0;
+    try {
+      while (idx < hostAttempts.length) {
+        const targetUrl = hostAttempts[idx];
+        const safeTargetUrl = sanitizeUrlForOutboundLog(targetUrl);
+        const headers = traceHeadersForOutbound(outboundTraceId, outboundSpanId);
         try {
-          data = text ? JSON.parse(text) : {};
-        } catch {
-          throw new Error(`Invalid JSON from ${targetUrl}: ${text.slice(0, 200)}`);
-        }
-        if (!r.ok) {
-          const err = new Error(`HTTP ${r.status} ${targetUrl}: ${JSON.stringify(data).slice(0, 500)}`);
-          if (data && typeof data === 'object') {
-            err.structuredPayload = data;
+          if (isDebugAgentEnabled()) {
+            appendOutboundReqLog(
+              `DEBUG_AGENT outbound request method=POST url=${targetUrl} headers=${debugAgentStringify(headers)} body=${debugAgentStringify(body)}`,
+              logOpts,
+            );
           }
-          throw err;
+          const r = await fetch(targetUrl, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(body),
+            signal: ac.signal,
+          });
+          const text = await r.text();
+          if (isDebugAgentEnabled()) {
+            appendOutboundReqLog(
+              `DEBUG_AGENT outbound response method=POST url=${targetUrl} status=${r.status} headers=${debugAgentStringify(Object.fromEntries(r.headers.entries()))} body=${text}`,
+              logOpts,
+            );
+          }
+          const ms = Date.now() - t0;
+          appendOutboundReqLog(`postJson POST ${safeTargetUrl} -> HTTP ${r.status} ${ms}ms`, logOpts);
+          let data = {};
+          try {
+            data = text ? JSON.parse(text) : {};
+          } catch {
+            throw new Error(`Invalid JSON from ${targetUrl}: ${text.slice(0, 200)}`);
+          }
+          if (!r.ok) {
+            const err = new Error(`HTTP ${r.status} ${targetUrl}: ${JSON.stringify(data).slice(0, 500)}`);
+            if (data && typeof data === 'object') {
+              err.structuredPayload = data;
+            }
+            throw err;
+          }
+          return data;
+        } catch (e) {
+          if (isDebugAgentEnabled()) {
+            appendOutboundReqLog(
+              `DEBUG_AGENT outbound error method=POST url=${targetUrl} message=${formatErrorWithCause(e)}`,
+              logOpts,
+            );
+          }
+          if (
+            idx === 0 &&
+            hostAttempts.length > 1 &&
+            isRetryableLoopbackFetchError(e) &&
+            !String(e?.name || '').includes('AbortError')
+          ) {
+            appendOutboundReqLog(
+              `postJson POST ${safeTargetUrl} -> retry loopback ${safeFallbackUrl} reason=${formatErrorWithCause(e).slice(0, 240)}`,
+              logOpts,
+            );
+            idx += 1;
+            continue;
+          }
+          throw normalizePostJsonError(e);
         }
-        return data;
-      } catch (e) {
-        if (isDebugAgentEnabled()) {
-          appendOutboundReqLog(
-            `DEBUG_AGENT outbound error method=POST url=${targetUrl} message=${formatErrorWithCause(e)}`,
-            logOpts,
-          );
-        }
-        if (
-          idx === 0 &&
-          attempts.length > 1 &&
-          isRetryableLoopbackFetchError(e) &&
-          !String(e?.name || '').includes('AbortError')
-        ) {
-          appendOutboundReqLog(
-            `postJson POST ${safeTargetUrl} -> retry loopback ${safeFallbackUrl} reason=${formatErrorWithCause(e).slice(0, 240)}`,
-            logOpts,
-          );
-          idx += 1;
-          continue;
-        }
-        throw normalizePostJsonError(e);
       }
+      throw new Error(`postJson exhausted attempts for ${safeUrl}`);
+    } catch (e) {
+      lastErr = normalizePostJsonError(e);
+      const retryable =
+        isRetryableLoopbackFetchError(lastErr) &&
+        !isAbortLikeError(lastErr) &&
+        !lastErr?.structuredPayload;
+      if (!retryable || round >= maxAttempts) {
+        const ms = Date.now() - t0;
+        appendOutboundReqLog(
+          `postJson POST ${safeUrl} -> error ${formatErrorWithCause(lastErr).slice(0, 400)} ${ms}ms`,
+          logOpts,
+        );
+        throw lastErr;
+      }
+      const waitMs = backoffMs * round;
+      appendOutboundReqLog(
+        `postJson POST ${safeUrl} -> transient retry ${round}/${maxAttempts} after ${waitMs}ms reason=${formatErrorWithCause(lastErr).slice(0, 240)}`,
+        logOpts,
+      );
+      await sleepMs(waitMs);
+    } finally {
+      clearTimeout(t);
     }
-    throw new Error(`postJson exhausted attempts for ${safeUrl}`);
-  } catch (e) {
-    const ms = Date.now() - t0;
-    appendOutboundReqLog(
-      `postJson POST ${safeUrl} -> error ${formatErrorWithCause(e).slice(0, 400)} ${ms}ms`,
-      logOpts,
-    );
-    throw normalizePostJsonError(e);
-  } finally {
-    clearTimeout(t);
   }
+  throw lastErr || new Error(`postJson exhausted attempts for ${safeUrl}`);
 }
 
 /** 将 TaskApi URL 中与 DOCKER_GATEWAY_HOSTNAME 一致的主机名换为 DOCKER_HOST_GATEWAY_IP（均在容器 env 中可选配置）。 */
@@ -346,12 +384,6 @@ export async function postCloneProgress(cloudPrefix, accessToken, progress, mess
 }
 
 /**
- * 将当前层级快照上报至 SaaS `server-container-token/layer-graph-push/`，由 Django 推送到
- * `server-startup-status-sse`（`status: container_layer_graph`），任务详情评论区 zTree 可即时刷新。
- * 环境与 `taskApiPrefix()`、`ACCESS_TOKEN` 不全或请求失败时静默忽略。
- * @param {null|{ layers?: unknown[], jobs?: unknown[], layers_root?: string, bootstrap_layer_id?: string|null }} snapshot
- */
-/**
  * POST `server-container-token/heartbeat/`：Django 向任务详情 SSE 转发 `container_heartbeat`（前端「容器连接」状态）。
  * 与 layer-graph-push 独立；此前未调用时 zTree 有数据但心跳始终收不到。
  * @param {string} [message]
@@ -437,16 +469,23 @@ export function startSaasContainerHeartbeatLoop() {
   };
 }
 
+/**
+ * 将当前层级快照上报至 SaaS `server-container-token/layer-graph-push/`，由 Django 推送到
+ * `server-startup-status-sse`（`status: container_layer_graph`），任务详情评论区 zTree 可即时刷新。
+ * 环境与 `taskApiPrefix()`、`ACCESS_TOKEN` 不全或请求失败时静默忽略。
+ * @param {null|{ layers?: unknown[], jobs?: unknown[], layers_root?: string, bootstrap_layer_id?: string|null }} snapshot
+ * @returns {Promise<boolean>} 是否上报成功（失败静默，供定时循环使用）
+ */
 export async function publishLayerGraphSnapshotToSaas(snapshot) {
-  if (!snapshot || typeof snapshot !== 'object') return;
+  if (!snapshot || typeof snapshot !== 'object') return false;
   let cloudPrefix;
   try {
     cloudPrefix = taskApiPrefix();
   } catch {
-    return;
+    return false;
   }
   const accessToken = String(process.env.ACCESS_TOKEN || '').trim();
-  if (!cloudPrefix || !accessToken) return;
+  if (!cloudPrefix || !accessToken) return false;
   const url = `${cloudPrefix.replace(/\/$/, '')}/server-container-token/layer-graph-push/`;
   const body = {
     access_token: accessToken,
@@ -459,9 +498,59 @@ export async function publishLayerGraphSnapshotToSaas(snapshot) {
   if (bs != null && String(bs).trim()) body.bootstrap_layer_id = String(bs).trim();
   try {
     await postJson(url, body, 15);
+    return true;
   } catch {
-    /* optional */
+    return false;
   }
+}
+
+const DEFAULT_SAAS_LAYER_GRAPH_PUSH_INTERVAL_SEC = 30;
+
+/**
+ * 定时将层级快照推送到 SaaS（弥补仅事件触发时前端刷新/SSE 漏收导致的「等待可写层」）。
+ * @param {() => null|{ layers?: unknown[], jobs?: unknown[], layers_root?: string, bootstrap_layer_id?: string|null } | Promise<null|{ layers?: unknown[], jobs?: unknown[], layers_root?: string, bootstrap_layer_id?: string|null }>} getSnapshot
+ * @returns {() => void} 停止定时器
+ */
+export function startSaasLayerGraphPushLoop(getSnapshot) {
+  if (['1', 'true', 'yes', 'on'].includes(String(process.env.TRAE_SKIP_SAAS_LAYER_GRAPH_PUSH || '').toLowerCase())) {
+    return () => {};
+  }
+  if (typeof getSnapshot !== 'function') {
+    return () => {};
+  }
+  const raw = String(process.env.TRAE_SAAS_LAYER_GRAPH_PUSH_INTERVAL_SEC || '').trim();
+  const sec = Math.max(
+    10,
+    Number.isFinite(parseFloat(raw)) ? parseFloat(raw) : DEFAULT_SAAS_LAYER_GRAPH_PUSH_INTERVAL_SEC,
+  );
+  const initialDelayRaw = String(process.env.TRAE_SAAS_LAYER_GRAPH_PUSH_INITIAL_DELAY_SEC || '8').trim();
+  const initialDelaySec = Math.max(
+    0,
+    Number.isFinite(parseFloat(initialDelayRaw)) ? parseFloat(initialDelayRaw) : 8,
+  );
+  const tick = () => {
+    void (async () => {
+      try {
+        const snap = await getSnapshot();
+        await publishLayerGraphSnapshotToSaas(snap);
+      } catch {
+        /* optional */
+      }
+    })();
+  };
+  let intervalId = null;
+  const startInterval = () => {
+    tick();
+    intervalId = setInterval(tick, Math.round(sec * 1000));
+  };
+  const initialTimer =
+    initialDelaySec > 0
+      ? setTimeout(startInterval, Math.round(initialDelaySec * 1000))
+      : (startInterval(), null);
+  return () => {
+    if (initialTimer != null) clearTimeout(initialTimer);
+    if (intervalId != null) clearInterval(intervalId);
+  };
 }
 
 /**

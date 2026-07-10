@@ -224,7 +224,9 @@ exit 0
     );
 
     await waitFor(
-      () => stdoutChunks.join('').includes('任务引导完成（详情已拉取、克隆与配置已就绪）。'),
+      () =>
+        stdoutChunks.join('').includes('BOOTSTRAP_COMPLETE')
+        || stdoutChunks.join('').includes('任务引导完成（详情已拉取、克隆与配置已就绪）。'),
       35_000,
       'bootstrap did not complete successfully',
     );

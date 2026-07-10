@@ -15,7 +15,7 @@ import {
   LAYER_ID_RE,
   repoDirNameFromUrl,
 } from './layerFs.mjs';
-import { configFilePath, layersRoot, logsDir } from './paths.mjs';
+import { configFilePath, layersRoot, logsDir, runtimeDir } from './paths.mjs';
 import {
   appendExecStream,
   resetExecStream,
@@ -23,6 +23,7 @@ import {
   completeExecStream,
 } from './execStream.mjs';
 import { gitCmd, gitCloneConfigArgs } from './gitCmd.mjs';
+import { normalizeRepoUrlForHttpsClone } from './gitRemote.mjs';
 import {
   postJson,
   rewriteDockerInternal,
@@ -36,6 +37,7 @@ import {
   runGitCloneWithProgress,
 } from './saasTaskCloud.mjs';
 import { hostMappedHttpPort } from './reachability.mjs';
+import { rememberStaleAccessToken } from './uiAccessToken.mjs';
 
 export let bootstrapCloneLayerId = null;
 /** 为 true 时 server 须在引导结束后调用 registerBootstrapCloneJob（仅「任务详情已含仓库并完成引导克隆」） */
@@ -313,6 +315,68 @@ function createBootstrapGitAskPassScript(httpAuth) {
 }
 
 /**
+ * 将仓库 URL（含 SSH）规范为 OAuth HTTPS 克隆地址，并生成 GIT_ASKPASS 环境补丁。
+ * bootstrap 与 POST /repos/reclone 共用。
+ *
+ * @param {string} repoUrl
+ * @param {Record<string, unknown> | null | undefined} credRoot
+ * @returns {{
+ *   cloneRemote: string,
+ *   credential: object | null,
+ *   httpAuth: { username: string, password: string } | null,
+ *   envPatch: Record<string, string>,
+ *   cleanup: () => void,
+ *   normalizedFromSsh: boolean,
+ * }}
+ */
+export function prepareOauthHttpsGitClone(repoUrl, credRoot) {
+  const raw = String(repoUrl || '').trim();
+  const credential = resolveRepoCloneCredential(credRoot, raw);
+  const httpAuth = buildHttpAuthFromRepoCredential(credential, raw);
+  let cloneRemote = raw;
+  let normalizedFromSsh = false;
+  if (httpAuth) {
+    const httpsCloneUrl =
+      credential && typeof credential === 'object'
+        ? String(credential.https_clone_url || '').trim()
+        : '';
+    const normalized = normalizeRepoUrlForHttpsClone(raw, { httpsCloneUrl });
+    if (normalized && normalized !== raw) {
+      cloneRemote = normalized;
+      normalizedFromSsh = true;
+    }
+  }
+  if (httpAuth && /^git@/i.test(cloneRemote)) {
+    throw new Error(
+      `SSH URL 无法转为 HTTPS（缺少 https_clone_url / TRAE_GIT_HTTPS_CLONE_ORIGIN）: ${raw}`,
+    );
+  }
+  const askpass = createBootstrapGitAskPassScript(httpAuth);
+  return {
+    cloneRemote,
+    credential: credential && typeof credential === 'object' ? credential : null,
+    httpAuth,
+    envPatch: askpass?.envPatch || {},
+    cleanup: () => askpass?.cleanup?.(),
+    normalizedFromSsh,
+  };
+}
+
+/**
+ * 仅拉取 repo-clone-credentials（供 reclone 等单仓路径，避免重复拉 task-detail）。
+ */
+export async function fetchRepoCloneCredentialsOnly(prefix, accessToken, timeoutSec) {
+  const credResp = await postJson(
+    `${prefix}/server-container-token/repo-clone-credentials/`,
+    { access_token: accessToken },
+    timeoutSec
+  );
+  return credResp && typeof credResp.repo_clone_credentials === 'object'
+    ? credResp.repo_clone_credentials
+    : {};
+}
+
+/**
  * 并行发起单仓 git clone；stderr 写入 {@link bootstrapRepoLogState} 中对应仓库的 body（与其它仓并行追加）。
  * @returns {Promise<{ ok: boolean, err?: Error }>}
  */
@@ -324,21 +388,27 @@ async function runOneBootstrapClone({
   accessToken,
 }) {
   const { raw, repoDir, index: i } = job;
-  const cloneRemote = raw;
-  const credential = resolveRepoCloneCredential(credRoot, raw);
-  const httpAuth = buildHttpAuthFromRepoCredential(credential, raw);
+  let prepared;
+  try {
+    prepared = prepareOauthHttpsGitClone(raw, credRoot);
+  } catch (err) {
+    return { ok: false, err: err instanceof Error ? err : new Error(String(err)) };
+  }
+  const { cloneRemote, httpAuth, credential, envPatch, cleanup, normalizedFromSsh } = prepared;
+  if (normalizedFromSsh) {
+    appendOutboundReqLog(`bootstrap-clone remote normalized ssh→https from=${raw} to=${cloneRemote}`);
+  }
   if (httpAuth) {
     const provider = credential && typeof credential === 'object' ? String(credential.provider || '').trim() : '';
     appendOutboundReqLog(
-      `bootstrap-clone auth repo=${raw} provider=${provider || 'unknown'} git_http_username=${httpAuth.username}`,
+      `bootstrap-clone auth repo=${raw} clone=${cloneRemote} provider=${provider || 'unknown'} git_http_username=${httpAuth.username}`,
     );
   }
-  const askpass = createBootstrapGitAskPassScript(httpAuth);
   try {
     const gitEnv = {
       ...process.env,
       GIT_TERMINAL_PROMPT: '0',
-      ...(askpass?.envPatch || {}),
+      ...envPatch,
     };
     const useV4 = String(process.env.TRAE_GIT_CLONE_ALLOW_IPV6 || '').trim() !== '1';
     const args = useV4
@@ -413,7 +483,7 @@ async function runOneBootstrapClone({
   } catch (err) {
     return { ok: false, err: err instanceof Error ? err : new Error(String(err)) };
   } finally {
-    askpass?.cleanup?.();
+    cleanup();
   }
 }
 
@@ -646,10 +716,15 @@ export async function fetchBootstrapRepoInputs(prefix, accessToken, timeoutSec) 
     timeoutSec
   );
   const urls = collectRepoUrls(detail);
+  console.log(
+    `[onlineServiceJS] 任务详情已拉取（关联仓库 ${urls.length} 个），继续引导…`,
+  );
   if (!urls.length) {
     return { urls, credRoot: {} };
   }
   await staggerBootstrapSaasCall();
+  appendOutboundReqLog('bootstrap post-listen: repo-clone-credentials');
+  console.log('[onlineServiceJS] 开始拉取仓库克隆凭证…');
   const credResp = await postJson(
     `${prefix}/server-container-token/repo-clone-credentials/`,
     { access_token: accessToken },
@@ -718,11 +793,38 @@ function bootstrapTaskIdForTokenStore() {
   return String(process.env.taskId || process.env.TASK_ID || '').trim();
 }
 
-function containerRefreshTokenStorePath() {
+/**
+ * 换票 HTTP 已成功，但本地 refresh/access 落盘失败。
+ * 与 TOKEN_ACCESS_INVALID（令牌本身无效）区分，避免误判为需重新签发 access。
+ */
+export class PersistedRefreshTokenStoreError extends Error {
+  /**
+   * @param {string} message
+   * @param {{ cause?: unknown, storePath?: string }} [opts]
+   */
+  constructor(message, opts = {}) {
+    const cause = opts.cause;
+    super(message, cause !== undefined ? { cause } : undefined);
+    this.name = 'PersistedRefreshTokenStoreError';
+    /** @type {'TOKEN_PERSIST_FAILED'} */
+    this.code = 'TOKEN_PERSIST_FAILED';
+    this.storePath = String(opts.storePath || '').trim();
+  }
+}
+
+/** @param {unknown} e */
+export function isPersistedRefreshTokenStoreError(e) {
+  return (
+    e instanceof PersistedRefreshTokenStoreError ||
+    (Boolean(e) && typeof e === 'object' && e.code === 'TOKEN_PERSIST_FAILED')
+  );
+}
+
+export function containerRefreshTokenStorePath() {
   return path.join(runtimeDir(), 'container_refresh_token.json');
 }
 
-function readPersistedRefreshToken() {
+export function readPersistedRefreshToken() {
   const fromEnv = String(process.env.CONTAINER_REFRESH_TOKEN || '').trim();
   if (fromEnv) return fromEnv;
   const storePath = containerRefreshTokenStorePath();
@@ -738,32 +840,75 @@ function readPersistedRefreshToken() {
   }
 }
 
-function writePersistedRefreshToken(refreshToken) {
-  const token = String(refreshToken || '').trim();
-  if (!token) return;
+/**
+ * 落盘容器换票结果，供 go_relayToTrae 在子进程换票后同步 status-push state
+ *（与云主机路径一致：首次 exchange 由 onlineServiceJS 完成）。
+ * @param {{ refreshToken: string, accessToken?: string, expiresAt?: string } | string} tokens
+ * @returns {string | undefined} 写入路径；refresh 为空时不写盘并返回 undefined
+ * @throws {PersistedRefreshTokenStoreError} 落盘失败（非令牌无效）
+ */
+export function writePersistedRefreshToken(tokens) {
+  const refreshToken = String(
+    typeof tokens === 'string' ? tokens : tokens?.refreshToken || '',
+  ).trim();
+  if (!refreshToken) return undefined;
+  const accessToken = String(
+    typeof tokens === 'string' ? '' : tokens?.accessToken || '',
+  ).trim();
+  const expiresAt = String(typeof tokens === 'string' ? '' : tokens?.expiresAt || '').trim();
   const payload = {
     task_id: bootstrapTaskIdForTokenStore(),
-    refresh_token: token,
+    refresh_token: refreshToken,
     updated_at: new Date().toISOString(),
   };
-  fs.writeFileSync(containerRefreshTokenStorePath(), `${JSON.stringify(payload)}\n`, {
-    encoding: 'utf8',
-    mode: 0o600,
-  });
+  if (accessToken) payload.access_token = accessToken;
+  if (expiresAt) payload.expires_at = expiresAt;
+  let storePath = '';
+  try {
+    storePath = containerRefreshTokenStorePath();
+    fs.writeFileSync(storePath, `${JSON.stringify(payload)}\n`, {
+      encoding: 'utf8',
+      // 0644：selected_image 下 state 目录 bind-mount 到宿主机时，go_relay 需可读以同步 token。
+      // 路径仍在 ONLINE_PROJECT_STATE_ROOT 私有目录下，不扩大到世界可读的通用位置。
+      mode: 0o644,
+    });
+  } catch (e) {
+    if (isPersistedRefreshTokenStoreError(e)) throw e;
+    const causeMsg = e && e.message ? String(e.message) : String(e);
+    throw new PersistedRefreshTokenStoreError(
+      `token-persist: FAIL write ${storePath || 'container_refresh_token.json'}: ${causeMsg}`,
+      { cause: e, storePath },
+    );
+  }
+  return storePath;
 }
 
-function clearPersistedRefreshToken() {
+export function clearPersistedRefreshToken() {
   try {
     fs.unlinkSync(containerRefreshTokenStorePath());
   } catch {
-    /* ignore */
+    /* ignore missing file / already cleared */
   }
 }
 
 /** exchange-refresh 返回 403：库中已有 refresh，须改走 refresh-access。 */
-function isExchangeRefreshForbiddenError(e) {
+export function isExchangeRefreshForbiddenError(e) {
   const msg = String(e?.message || e || '');
   return /HTTP\s+403\b/i.test(msg) && /refresh-access/i.test(msg);
+}
+
+/**
+ * 换票失败日志行：落盘失败用 FAIL_PERSIST + TOKEN_PERSIST_FAILED，与普通 FAIL（含令牌无效）区分。
+ * @param {unknown} e
+ */
+export function formatTokenExchangeFailureLog(e) {
+  const detail = e && typeof e === 'object' && e.message != null ? String(e.message) : String(e);
+  const persistFail = isPersistedRefreshTokenStoreError(e);
+  const tag = persistFail ? 'FAIL_PERSIST' : 'FAIL';
+  const code =
+    persistFail && e && typeof e === 'object' && e.code ? String(e.code) : 'TOKEN_PERSIST_FAILED';
+  const codeHint = persistFail ? ` error_code=${code}` : '';
+  return `token-exchange: ${tag}${codeHint} ${detail}`;
 }
 
 async function runRefreshAccessOnly(prefix, refreshToken, tokenTimeout) {
@@ -780,11 +925,16 @@ async function runRefreshAccessOnly(prefix, refreshToken, tokenTimeout) {
   );
   const at = ref.access_token;
   if (!at || typeof at !== 'string') throw new Error('refresh-access missing access_token');
+  const prevAccess = String(process.env.ACCESS_TOKEN || '').trim();
+  if (prevAccess && prevAccess !== at) {
+    rememberStaleAccessToken(prevAccess);
+  }
   process.env.ACCESS_TOKEN = at;
+  const expiresAt = String(ref.expires_at || '').trim();
   logTokenExchange(
     `refresh-access OK new_access_token ${summarizeSecret(at)} ACCESS_TOKEN env updated`,
   );
-  return at;
+  return { accessToken: at, expiresAt };
 }
 
 /**
@@ -848,7 +998,7 @@ export async function runBootstrapTokenExchangeOnly() {
         refreshToken = ex.refresh_token;
         if (!refreshToken) throw new Error('exchange-refresh missing refresh_token');
         logTokenExchange(`exchange-refresh OK refresh_token ${summarizeSecret(refreshToken)}`);
-        writePersistedRefreshToken(refreshToken);
+        writePersistedRefreshToken({ refreshToken });
       } catch (e) {
         if (!isExchangeRefreshForbiddenError(e)) {
           throw e;
@@ -863,19 +1013,31 @@ export async function runBootstrapTokenExchangeOnly() {
         logTokenExchange(
           'exchange-refresh 403: fallback to refresh-access using persisted refresh_token',
         );
-        newAccess = await runRefreshAccessOnly(prefix, refreshToken, tokenTimeout);
+        const fb = await runRefreshAccessOnly(prefix, refreshToken, tokenTimeout);
+        newAccess = fb.accessToken;
+        writePersistedRefreshToken({
+          refreshToken,
+          accessToken: newAccess,
+          expiresAt: fb.expiresAt,
+        });
         logTokenExchange('done (refresh-access fallback)');
         return { skipped: false, prefix, newAccess, timeout };
       }
 
-      newAccess = await runRefreshAccessOnly(prefix, refreshToken, tokenTimeout);
+      const refreshed = await runRefreshAccessOnly(prefix, refreshToken, tokenTimeout);
+      newAccess = refreshed.accessToken;
+      writePersistedRefreshToken({
+        refreshToken,
+        accessToken: newAccess,
+        expiresAt: refreshed.expiresAt,
+      });
       logTokenExchange('done');
     } catch (e) {
-      const detail = e && e.message ? String(e.message) : String(e);
-      const failLine = `token-exchange: FAIL ${detail}`;
+      const failLine = formatTokenExchangeFailureLog(e);
       appendOutboundReqLog(failLine);
       appendTokenRefreshLog(failLine);
-      console.error('[onlineServiceJS] token-exchange: FAIL', e);
+      const tag = isPersistedRefreshTokenStoreError(e) ? 'FAIL_PERSIST' : 'FAIL';
+      console.error(`[onlineServiceJS] token-exchange: ${tag}`, e);
       throw e;
     }
   } else {
@@ -976,7 +1138,8 @@ export async function runBootstrapAfterListen(ctx) {
   const { prefix, newAccess, timeout } = ctx;
   const timeoutSec = timeout;
 
-  console.log('[onlineServiceJS] 容器已启动，开始拉取任务详情…');
+  // 稳定标记供前端启动日志检索；勿改前缀，面板会高亮 BOOTSTRAP_* 行。
+  console.log('[onlineServiceJS] BOOTSTRAP_PHASE=task_detail_begin 容器已启动，开始拉取任务详情…');
   appendOutboundReqLog('bootstrap post-listen: task-detail');
 
   let urls = [];
@@ -986,18 +1149,28 @@ export async function runBootstrapAfterListen(ctx) {
     urls = repoInputs.urls;
     credRoot = repoInputs.credRoot;
   } catch (e) {
-    if (
+    const wrapped =
       String(e?.message || '').includes('/server-container-token/repo-clone-credentials/')
       || String(e?.message || '').includes('REPO_CLONE_CREDENTIALS_INCOMPLETE')
-    ) {
-      throw buildRepoCloneCredentialsBootstrapError(e);
-    }
-    throw e instanceof Error ? e : new Error(String(e || 'task-detail failed'));
+        ? buildRepoCloneCredentialsBootstrapError(e)
+        : e instanceof Error
+          ? e
+          : new Error(String(e || 'task-detail failed'));
+    console.error(
+      `[onlineServiceJS] BOOTSTRAP_FAILED phase=task_detail_or_credentials ${String(wrapped?.message || wrapped).slice(0, 500)}`,
+    );
+    throw wrapped;
   }
   if (urls.length) {
-    appendOutboundReqLog('bootstrap post-listen: repo-clone-credentials');
-    console.log('[onlineServiceJS] 任务详情已就绪，开始项目克隆…');
-    bootstrapCloneLayerId = await cloneReposIntoSharedLayer(urls, credRoot, prefix, newAccess);
+    console.log('[onlineServiceJS] BOOTSTRAP_PHASE=clone_begin 任务详情已就绪，开始项目克隆…');
+    try {
+      bootstrapCloneLayerId = await cloneReposIntoSharedLayer(urls, credRoot, prefix, newAccess);
+    } catch (e) {
+      console.error(
+        `[onlineServiceJS] BOOTSTRAP_FAILED phase=clone ${String(e?.message || e).slice(0, 500)}`,
+      );
+      throw e;
+    }
     bootstrapRegisterCloneJob = true;
   } else {
     appendOutboundReqLog('bootstrap: no repo urls in task-detail');
@@ -1006,13 +1179,25 @@ export async function runBootstrapAfterListen(ctx) {
   }
 
   await staggerBootstrapSaasCall();
-  const y = await postJson(
-    `${prefix}/server-container-token/feature-params-env/`,
-    { access_token: newAccess },
-    timeoutSec
-  );
+  appendOutboundReqLog('bootstrap post-listen: feature-params-env');
+  console.log('[onlineServiceJS] BOOTSTRAP_PHASE=feature_params_begin 开始拉取 feature-params-env…');
+  let y;
+  try {
+    y = await postJson(
+      `${prefix}/server-container-token/feature-params-env/`,
+      { access_token: newAccess },
+      timeoutSec
+    );
+  } catch (e) {
+    console.error(
+      `[onlineServiceJS] BOOTSTRAP_FAILED phase=feature_params_env ${String(e?.message || e).slice(0, 500)}`,
+    );
+    throw e;
+  }
   persistFeatureParamsEnv(y.env);
-  console.log('[onlineServiceJS] 任务引导完成（详情已拉取、克隆与配置已就绪）。');
+  console.log(
+    '[onlineServiceJS] BOOTSTRAP_COMPLETE 任务引导完成（详情已拉取、克隆与配置已就绪）。',
+  );
 }
 
 /** 顺序执行换票 + 详情/克隆/配置（单测或无需分离 listen 的场景）。 */

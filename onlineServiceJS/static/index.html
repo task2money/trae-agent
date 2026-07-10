@@ -2330,7 +2330,26 @@
         sseAppend(ev.data.slice(0, 120));
       }
       };
-      es.onerror = () => sseAppend('[SSE error / reconnecting]');
+      es.onerror = () => {
+        sseAppend('[SSE error / reconnecting]');
+        // 换票后旧 /ui/{bootstrap} 页内嵌 token 失效：尝试跳到当前 ACCESS_TOKEN 控制台。
+        void (async () => {
+          try {
+            const u = new URL('/api/session/ui-redirect', location.origin);
+            u.searchParams.set('access_token', ACCESS_TOKEN);
+            const r = await fetch(u.toString(), {
+              headers: { 'X-Access-Token': ACCESS_TOKEN },
+            });
+            if (!r.ok) return;
+            const j = await r.json();
+            if (j && j.redirected && j.ui_path && typeof j.ui_path === 'string') {
+              location.replace(j.ui_path);
+            }
+          } catch (_) {
+            /* ignore */
+          }
+        })();
+      };
     }
 
     document.getElementById('btnPushCfg').onclick = debounceClick(() => {
