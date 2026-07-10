@@ -416,7 +416,7 @@ export async function postContainerHeartbeatToSaas(message) {
   const msg = typeof message === 'string' ? message.trim() : '';
   if (msg) body.message = msg.slice(0, 500);
   try {
-    const data = await postJson(url, body, 10, { reqLogFile: HEARTBEAT_REQ_LOG_FILE });
+    const data = await postJson(url, body, 14, { reqLogFile: HEARTBEAT_REQ_LOG_FILE });
     // SaaS 全局中间件会把 JSON 数字转成字符串；须兼容 number / numeric string
     const saasSeqRaw = data?.seq;
     const saasSeq =
@@ -451,8 +451,21 @@ export function startSaasContainerHeartbeatLoop() {
     0,
     Number.isFinite(parseFloat(initialDelayRaw)) ? parseFloat(initialDelayRaw) : 5,
   );
+  let consecutiveFailures = 0;
   const tick = () => {
-    void postContainerHeartbeatToSaas('onlineServiceJS');
+    void postContainerHeartbeatToSaas('onlineServiceJS').then((ok) => {
+      if (ok) {
+        consecutiveFailures = 0;
+        return;
+      }
+      consecutiveFailures += 1;
+      // 失败默认只写 heartbeat.log；连续失败时打 stdout，便于 docker logs 诊断「容器连接 idle」
+      if (consecutiveFailures === 1 || consecutiveFailures % 3 === 0) {
+        console.error(
+          `[onlineServiceJS] SaaS 容器心跳上报失败 consecutive=${consecutiveFailures}（详见 reqLogs/heartbeat.log）`,
+        );
+      }
+    });
   };
   let intervalId = null;
   const startInterval = () => {
