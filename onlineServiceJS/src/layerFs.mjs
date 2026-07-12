@@ -331,6 +331,37 @@ export function gitWorktreeDirty(layerId) {
 }
 
 /**
+ * 将 `refs/remotes/origin/<branch>` 指到当前 HEAD。
+ * OAuth/URL 形式的 `git push <url> HEAD:refs/heads/X` 不会更新 remote-tracking，
+ * 导致层快照 `git rev-list @{u}..HEAD` 在推送成功后仍 > 0。
+ * @param {string} workdir
+ * @param {string} branchRefOrName - `feature/x` 或 `refs/heads/feature/x`
+ * @returns {boolean}
+ */
+export function markOriginRemoteTrackingToHead(workdir, branchRefOrName) {
+  const cwd = String(workdir || '').trim();
+  if (!cwd) return false;
+  let name = String(branchRefOrName || '').trim();
+  if (!name) return false;
+  if (name.startsWith('refs/heads/')) {
+    name = name.slice('refs/heads/'.length);
+  } else if (name.startsWith('refs/remotes/')) {
+    const parts = name.split('/');
+    // refs/remotes/<remote>/<branch...>
+    name = parts.length >= 4 ? parts.slice(3).join('/') : parts[parts.length - 1] || '';
+  }
+  if (!name || name.includes('..') || name.startsWith('-') || name.includes('\0')) return false;
+  const ref = `refs/remotes/origin/${name}`;
+  const r = spawnSync(gitCmd(), ['update-ref', ref, 'HEAD'], {
+    cwd,
+    encoding: 'utf8',
+    env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+    timeout: 15_000,
+  });
+  return r.status === 0;
+}
+
+/**
  * 与层快照 `git_remote`、前端「推送」旁提交数一致；目录与 `layerPrimaryGitWorkdir` / `POST .../git/push` 相同。
  * @returns {{ is_git: boolean, ahead: number | null, no_upstream: boolean, upstream: string }}
  */

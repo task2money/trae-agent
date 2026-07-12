@@ -69,7 +69,10 @@ import {
   resolvedParentLayerId,
   layerGitWorkdirRootsForFileListing,
   createStackedLayer,
+  markOriginRemoteTrackingToHead,
+  layerGitRemoteSnapshot,
 } from './layerFs.mjs';
+import { runLayerGitMerge } from './layerGitMerge.mjs';
 
 import {
   createJob,
@@ -1390,14 +1393,68 @@ api.post('/layers/:layer_id/git/push', async (req, res) => {
         ? branch
         : `refs/heads/${branch}`
       : 'origin HEAD';
+    // 非 named-remote / URL push 时补齐 origin/<branch>，避免层快照 ahead 仍 > 0
+    if (branch) {
+      markOriginRemoteTrackingToHead(work, branch);
+    }
     console.log('[LayerGitPush] ok layer_id=%s ref=%s', req.params.layer_id, pushedRef);
     appendGitPushReqLog(`api layer_id=${layerId} ok ref=${pushedRef}`);
-    res.json({ ok: true });
+    res.json({ ok: true, git_remote: layerGitRemoteSnapshot(layerId) });
   } catch (e) {
     console.warn('[LayerGitPush] fail layer_id=%s err=%s', req.params.layer_id, String(e.message || e));
     appendGitPushReqLog(
       `api layer_id=${layerId} fail ${cmdLine ? `cmd=${cmdLine} ` : ''}err=${String(e.message || e).slice(0, 800)}`,
     );
+    res.status(400).json({ detail: String(e.message || e) });
+  }
+});
+
+/**
+ * 将当前 HEAD（或 source_ref）本地合并进 target_branch（合并目标分支）。
+ * 工作区须干净；冲突时 abort 并切回源分支。
+ */
+api.post('/layers/:layer_id/git/merge', async (req, res) => {
+  const layerId = String(req.params.layer_id || '').trim();
+  const work = layerPrimaryGitWorkdir(layerId);
+  const targetBranch = String(req.body?.target_branch || '').trim();
+  const sourceRef = String(req.body?.source_ref || '').trim();
+  console.log(
+    '[LayerGitMerge] start layer_id=%s target_branch=%s source_ref=%s',
+    layerId,
+    targetBranch || '(empty)',
+    sourceRef || '(HEAD)',
+  );
+  try {
+    const { httpStatus, payload } = await runLayerGitMerge({
+      gitExec,
+      work: work || '',
+      targetBranch,
+      sourceRef: sourceRef || undefined,
+    });
+    if (httpStatus >= 400) {
+      console.warn(
+        '[LayerGitMerge] fail layer_id=%s status=%s detail=%s',
+        layerId,
+        httpStatus,
+        String(payload?.detail || '').slice(0, 400),
+      );
+      return res.status(httpStatus).json(payload);
+    }
+    const body = { ...payload };
+    try {
+      body.git_remote = layerGitRemoteSnapshot(layerId);
+    } catch {
+      /* optional */
+    }
+    console.log(
+      '[LayerGitMerge] ok layer_id=%s status=%s target=%s',
+      layerId,
+      body.status,
+      targetBranch,
+    );
+    res.status(httpStatus).json(body);
+  } catch (e) {
+    console.warn('[LayerGitMerge] fail layer_id=%s err=%s', layerId, String(e.message || e));
     res.status(400).json({ detail: String(e.message || e) });
   }
 });

@@ -176,6 +176,7 @@ Dockerfile 基于 **ubuntu:24.04**（可通过构建参数 `BASE_IMAGE` / 环境
 | `GET` | `/api/layers/{layer_id}/git/branches` | **未实现**（列分支）。 |
 | `POST` | `/api/layers/{layer_id}/git/commit` | `git add -A` 与 `git commit -m`。 |
 | `POST` | `/api/layers/{layer_id}/git/push` | `git push`；支持 `ephemeral_ssh_private_key`、`target_branch`（与 clone 类似）。 |
+| `POST` | `/api/layers/{layer_id}/git/merge` | 本地将当前 HEAD（或 `source_ref`）合并进 `target_branch`（合并目标）。工作区须干净；冲突返回 409 并 abort。 |
 | `GET` | `/api/layers/{layer_id}/git/commit/latest-log` | `git log -1 --stat` 文本。 |
 | `POST` | `/api/layers/{layer_id}/git/diff-log` | 对指定文件列表生成当前不同于已提交内容的 diff 日志及 AI 总结。JSON 体：`files`（字符串数组，必填）。返回 `files`（每个文件的 diff 详情）、`log`（合并后的原始 diff 日志文本）、`summary`（AI 生成的变更总结，若未配置 LLM 则为启发式描述）、`changed_files_count`（变更文件数量）。支持多仓库路径前缀解析。 |
 | `GET` | `/api/layers/{layer_id}/git/repo-identities` | **只读**：路径参数 `layer_id` 为当前选中的可写层（与任务详情层级图、`POST /api/jobs` 锚点一致）。响应 JSON：`layer_id`；`repos` 为数组，每项对应 `src/layerFs.mjs` 中 `layerGitWorkdirRootsForFileListing` 枚举的一个 Git 工作区（多仓并列时含 `rel_prefix` 目录名）：`rel_prefix`（顶层单仓时多为空字符串）、`origin_url`（`git config --get remote.origin.url`，无则空）、`repo_match_key`（由 `origin_url` 推导，与任务详情前端 `gitCloneRefMatchKey` 一致，用于与任务关联仓库 URL 对齐；无 `origin_url` 时为空）、`user_name` / `user_email`（`git config --get user.name` / `user.email`，未设置时为空字符串）、`error`（仅当该路径非有效 git 工作区或异常时存在）。层目录不存在时 **404** `{ "detail": "layer not found" }`。认证同其它受保护 API。SaaS 经 `GET /api/tenant/{tenant}/workspace/{workspace}/task/{task}/cloud/compute/container-layer-git-repo-identities/?layer_id=…` 转发到容器本路径。 |
@@ -252,6 +253,7 @@ Dockerfile 基于 **ubuntu:24.04**（可通过构建参数 `BASE_IMAGE` / 环境
 | `POST` | `/api/layers/{layer_id}/git/repo-identities/sync` | 任务详情「关联项目」：**接口 A**，将各仓库所选身份批量写入容器层内对应克隆仓的 `git config`。 |
 | `POST` | `/api/layers/{layer_id}/git/commit` | JSON：`message`（可选）；「提交」。 |
 | `POST` | `/api/layers/{layer_id}/git/push` | 「推送」；可带 `ephemeral_ssh_private_key`。 |
+| `POST` | `/api/layers/{layer_id}/git/merge` | 「合并到目标分支」；body 含 `target_branch`，可选 `source_ref`。 |
 | `GET` | `/api/layers/{layer_id}/children` | 层内文件树分页。 |
 | `GET` | `/api/layers/{layer_id}/files/{file_rel_posix}` | 读取选中文件内容。 |
 

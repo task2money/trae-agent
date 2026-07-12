@@ -7,7 +7,11 @@ import path from 'path';
 import os from 'os';
 import { spawn, spawnSync } from 'child_process';
 import { gitCmd, formatGitExecDebugLine } from './gitCmd.mjs';
-import { layerGitWorkdirRootsForFileListing } from './layerFs.mjs';
+import {
+  layerGitWorkdirRootsForFileListing,
+  layerGitRemoteSnapshot,
+  markOriginRemoteTrackingToHead,
+} from './layerFs.mjs';
 import {
   appendOutboundReqLog,
   appendGitPushReqLog,
@@ -410,6 +414,8 @@ export async function runLayerGithubOauthAccessPush(opts) {
       try {
         await gitExecAsync(pushArgs, row.workdir, pushEnv);
         item.push_ok = true;
+        // URL remote 推送不会更新 origin/<branch>；对齐 @{u}..HEAD 以便层快照 ahead 归零
+        markOriginRemoteTrackingToHead(row.workdir, dstRef);
         appendGitPushReqLog(
           `oauth layer_id=${layerId} slug=${slug} rel_prefix=${String(row.relPrefix || '').slice(0, 160)} git_push ok`,
         );
@@ -474,11 +480,13 @@ export async function runLayerGithubOauthAccessPush(opts) {
     };
   }
   appendGitPushReqLog(`oauth layer_id=${layerId} done ok repos=${repos.length}`);
+  const gitRemote = layerGitRemoteSnapshot(layerId);
   return {
     httpStatus: 200,
     payload: {
       ok: true,
       github_oauth_multirepo: { repos },
+      git_remote: gitRemote,
     },
   };
 }
