@@ -342,6 +342,25 @@ export function gitWorktreeDirty(layerId) {
 }
 
 /**
+ * 规范化分支名（去掉 refs/heads|remotes 前缀），拒绝危险字符。
+ * @param {string} branchRefOrName
+ * @returns {string}
+ */
+export function normalizeGitBranchName(branchRefOrName) {
+  let name = String(branchRefOrName || '').trim();
+  if (!name) return '';
+  if (name.startsWith('refs/heads/')) {
+    name = name.slice('refs/heads/'.length);
+  } else if (name.startsWith('refs/remotes/')) {
+    const parts = name.split('/');
+    // refs/remotes/<remote>/<branch...>
+    name = parts.length >= 4 ? parts.slice(3).join('/') : parts[parts.length - 1] || '';
+  }
+  if (!name || name.includes('..') || name.startsWith('-') || name.includes('\0')) return '';
+  return name;
+}
+
+/**
  * 将 `refs/remotes/origin/<branch>` 指到当前 HEAD。
  * OAuth/URL 形式的 `git push <url> HEAD:refs/heads/X` 不会更新 remote-tracking，
  * 导致层快照 `git rev-list @{u}..HEAD` 在推送成功后仍 > 0。
@@ -352,16 +371,8 @@ export function gitWorktreeDirty(layerId) {
 export function markOriginRemoteTrackingToHead(workdir, branchRefOrName) {
   const cwd = String(workdir || '').trim();
   if (!cwd) return false;
-  let name = String(branchRefOrName || '').trim();
+  const name = normalizeGitBranchName(branchRefOrName);
   if (!name) return false;
-  if (name.startsWith('refs/heads/')) {
-    name = name.slice('refs/heads/'.length);
-  } else if (name.startsWith('refs/remotes/')) {
-    const parts = name.split('/');
-    // refs/remotes/<remote>/<branch...>
-    name = parts.length >= 4 ? parts.slice(3).join('/') : parts[parts.length - 1] || '';
-  }
-  if (!name || name.includes('..') || name.startsWith('-') || name.includes('\0')) return false;
   const ref = `refs/remotes/origin/${name}`;
   const r = spawnSync(gitCmd(), ['update-ref', ref, 'HEAD'], {
     cwd,
@@ -372,12 +383,60 @@ export function markOriginRemoteTrackingToHead(workdir, branchRefOrName) {
   return r.status === 0;
 }
 
+function gitPushCompareBranchPath(layerId) {
+  return path.join(layerPath(layerId), 'git_push_compare_branch');
+}
+
+/**
+ * 推送成功后记下工作分支名，供 GET /api/layers 刷新时按「相对推送目标」算 ahead。
+ * @param {string} layerId
+ * @param {string} branchRefOrName
+ * @returns {boolean}
+ */
+export function rememberLayerGitPushCompareBranch(layerId, branchRefOrName) {
+  const lid = String(layerId || '').trim();
+  if (!lid || !LAYER_ID_RE.test(lid)) return false;
+  const name = normalizeGitBranchName(branchRefOrName);
+  if (!name) return false;
+  const root = layerPath(lid);
+  if (!fs.existsSync(root)) return false;
+  fs.writeFileSync(gitPushCompareBranchPath(lid), `${name}\n`, 'utf8');
+  return true;
+}
+
+/**
+ * @param {string} layerId
+ * @returns {string}
+ */
+export function readLayerGitPushCompareBranch(layerId) {
+  const lid = String(layerId || '').trim();
+  if (!lid || !LAYER_ID_RE.test(lid)) return '';
+  const p = gitPushCompareBranchPath(lid);
+  if (!fs.existsSync(p)) return '';
+  try {
+    return normalizeGitBranchName(fs.readFileSync(p, 'utf8').split('\n')[0] || '');
+  } catch {
+    return '';
+  }
+}
+
 /**
  * 与层快照 `git_remote`、前端「推送」旁提交数一致；目录与 `layerPrimaryGitWorkdir` / `POST .../git/push` 相同。
- * @returns {{ is_git: boolean, ahead: number | null, no_upstream: boolean, upstream: string }}
+ * ahead 语义：相对「推送目标 / 工作分支」未推送的提交数（不是盲目信 @{u}）。
+ * 比较顺序：opts.compareBranch → 层内 remember → origin/<current_branch> → @{u}。
+ * @param {string} layerId
+ * @param {{ compareBranch?: string }} [opts]
+ * @returns {{ is_git: boolean, ahead: number | null, no_upstream: boolean, upstream: string, current_branch: string, compare_branch: string }}
  */
-export function layerGitRemoteSnapshot(layerId) {
-  const empty = { is_git: false, ahead: null, no_upstream: true, upstream: '' };
+export function layerGitRemoteSnapshot(layerId, opts = {}) {
+  const empty = {
+    is_git: false,
+    ahead: null,
+    no_upstream: true,
+    upstream: '',
+    current_branch: '',
+    compare_branch: '',
+  };
   const lid = String(layerId || '').trim();
   if (!lid || !LAYER_ID_RE.test(lid)) return empty;
   const work = layerPrimaryGitWorkdir(lid);
@@ -397,19 +456,72 @@ export function layerGitRemoteSnapshot(layerId) {
     return empty;
   }
 
+  const headRef = run(['rev-parse', '--abbrev-ref', 'HEAD']);
+  const current_branch =
+    headRef.status === 0 ? String(headRef.stdout || '').trim() : '';
+
+  const compare_branch =
+    normalizeGitBranchName(opts?.compareBranch) || readLayerGitPushCompareBranch(lid) || '';
+
+  /** @type {string[]} */
+  const candidateBranches = [];
+  if (compare_branch) candidateBranches.push(compare_branch);
+  if (current_branch && current_branch !== 'HEAD' && current_branch !== compare_branch) {
+    candidateBranches.push(current_branch);
+  }
+
+  for (const branch of candidateBranches) {
+    const remoteRef = `refs/remotes/origin/${branch}`;
+    const verify = run(['rev-parse', '--verify', remoteRef]);
+    if (verify.status !== 0) continue;
+    const count = run(['rev-list', '--count', `origin/${branch}..HEAD`]);
+    if (count.status !== 0) continue;
+    const n = parseInt(String(count.stdout || '').trim(), 10);
+    const ahead = Number.isFinite(n) && n >= 0 ? n : 0;
+    return {
+      is_git: true,
+      ahead,
+      no_upstream: false,
+      upstream: `origin/${branch}`,
+      current_branch,
+      compare_branch,
+    };
+  }
+
   const upRef = run(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}']);
   const upstream = String(upRef.stdout || '').trim();
   if (upRef.status !== 0 || !upstream) {
-    return { is_git: true, ahead: null, no_upstream: true, upstream: '' };
+    return {
+      is_git: true,
+      ahead: null,
+      no_upstream: true,
+      upstream: '',
+      current_branch,
+      compare_branch,
+    };
   }
 
   const count = run(['rev-list', '--count', '@{u}..HEAD']);
   if (count.status !== 0) {
-    return { is_git: true, ahead: null, no_upstream: false, upstream };
+    return {
+      is_git: true,
+      ahead: null,
+      no_upstream: false,
+      upstream,
+      current_branch,
+      compare_branch,
+    };
   }
   const n = parseInt(String(count.stdout || '').trim(), 10);
   const ahead = Number.isFinite(n) && n >= 0 ? n : 0;
-  return { is_git: true, ahead, no_upstream: false, upstream };
+  return {
+    is_git: true,
+    ahead,
+    no_upstream: false,
+    upstream,
+    current_branch,
+    compare_branch,
+  };
 }
 
 export function layerRootOrChildHasGit(layerDir) {

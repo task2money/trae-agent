@@ -11,6 +11,7 @@ import {
   layerGitWorkdirRootsForFileListing,
   layerGitRemoteSnapshot,
   markOriginRemoteTrackingToHead,
+  rememberLayerGitPushCompareBranch,
 } from './layerFs.mjs';
 import {
   appendOutboundReqLog,
@@ -416,6 +417,7 @@ export async function runLayerGithubOauthAccessPush(opts) {
         item.push_ok = true;
         // URL remote 推送不会更新 origin/<branch>；对齐 @{u}..HEAD 以便层快照 ahead 归零
         markOriginRemoteTrackingToHead(row.workdir, dstRef);
+        rememberLayerGitPushCompareBranch(layerId, headName || targetBranch);
         appendGitPushReqLog(
           `oauth layer_id=${layerId} slug=${slug} rel_prefix=${String(row.relPrefix || '').slice(0, 160)} git_push ok`,
         );
@@ -480,7 +482,7 @@ export async function runLayerGithubOauthAccessPush(opts) {
     };
   }
   appendGitPushReqLog(`oauth layer_id=${layerId} done ok repos=${repos.length}`);
-  const gitRemote = layerGitRemoteSnapshot(layerId);
+  const gitRemote = layerGitRemoteSnapshot(layerId, { compareBranch: headName || targetBranch });
   return {
     httpStatus: 200,
     payload: {

@@ -71,6 +71,7 @@ import {
   clickedPathIsGitRepoRoot,
   createStackedLayer,
   markOriginRemoteTrackingToHead,
+  rememberLayerGitPushCompareBranch,
   layerGitRemoteSnapshot,
 } from './layerFs.mjs';
 import { runLayerGitMerge } from './layerGitMerge.mjs';
@@ -1415,10 +1416,14 @@ api.post('/layers/:layer_id/git/push', async (req, res) => {
     // 非 named-remote / URL push 时补齐 origin/<branch>，避免层快照 ahead 仍 > 0
     if (branch) {
       markOriginRemoteTrackingToHead(work, branch);
+      rememberLayerGitPushCompareBranch(layerId, branch);
     }
     console.log('[LayerGitPush] ok layer_id=%s ref=%s', req.params.layer_id, pushedRef);
     appendGitPushReqLog(`api layer_id=${layerId} ok ref=${pushedRef}`);
-    res.json({ ok: true, git_remote: layerGitRemoteSnapshot(layerId) });
+    res.json({
+      ok: true,
+      git_remote: layerGitRemoteSnapshot(layerId, branch ? { compareBranch: branch } : {}),
+    });
   } catch (e) {
     console.warn('[LayerGitPush] fail layer_id=%s err=%s', req.params.layer_id, String(e.message || e));
     appendGitPushReqLog(

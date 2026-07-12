@@ -146,7 +146,7 @@ Dockerfile 基于 **ubuntu:24.04**（可通过构建参数 `BASE_IMAGE` / 环境
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| `GET` | `/api/layers` | 列出可写层（**不含** `meta_kind=empty` 锚点）。**网关转发**亦可使用 scoped 形态 `/api/tenant/{t}/workspace/{w}/task/{task}/layers`（入站 rewrite 到本路径；访问日志保留 scoped `originalUrl`）。 |
+| `GET` | `/api/layers` | 列出可写层（**不含** `meta_kind=empty` 锚点）。每层含 `git_worktree_dirty` 与 `git_remote`（`is_git`/`ahead`/`no_upstream`/`upstream`/`current_branch`）。**网关转发**亦可使用 scoped 形态 `/api/tenant/{t}/workspace/{w}/task/{task}/layers`（入站 rewrite 到本路径；访问日志保留 scoped `originalUrl`）。 |
 | `GET` | `/api/layers/empty-root` | 返回空层锚点 `layer_id`。 |
 | `GET` | `/api/layers/{layer_id}/files` | 层内文件扁平列表（实现上有条数上限，默认与遍历深度以代码为准）。 |
 | `GET` | `/api/layers/{layer_id}/files/{file_rel_posix}` | 读取单文件；支持 `max_bytes` 等（见路由实现）。 |
