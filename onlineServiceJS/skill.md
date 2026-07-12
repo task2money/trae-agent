@@ -173,6 +173,7 @@ Dockerfile 基于 **ubuntu:24.04**（可通过构建参数 `BASE_IMAGE` / 环境
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
+| `GET` | `/api/layers/{layer_id}/git/log` | 提交日志文本。Query：`path`（文件树相对路径）、`limit`（1–100）。响应：`text`、`commits`（可空）、`is_repo_root`（点击目录是否为仓库根）、可选 `current_branch`（仅仓库根且读 HEAD 成功时）。 |
 | `GET` | `/api/layers/{layer_id}/git/branches` | **未实现**（列分支）。 |
 | `POST` | `/api/layers/{layer_id}/git/commit` | `git add -A` 与 `git commit -m`。 |
 | `POST` | `/api/layers/{layer_id}/git/push` | `git push`；支持 `ephemeral_ssh_private_key`、`target_branch`（与 clone 类似）。 |

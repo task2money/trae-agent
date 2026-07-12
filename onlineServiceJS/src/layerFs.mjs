@@ -227,6 +227,17 @@ export function resolveLayerGitLogContext(layerId, rawPath) {
   return null;
 }
 
+/**
+ * 文件树点击的目录是否为 Git 仓库根（该目录下存在 `.git`）。
+ * @param {{ work: string, pathspec: string | null } | null} ctx
+ * @returns {boolean}
+ */
+export function clickedPathIsGitRepoRoot(ctx) {
+  if (!ctx || !ctx.work) return false;
+  const abs = ctx.pathspec ? path.join(ctx.work, ctx.pathspec) : ctx.work;
+  return dirHasGit(abs);
+}
+
 function walkRepoRelativeFiles(absBase, relPrefix, files, maxFiles, deletedInner = new Set()) {
   function walk(d, rel) {
     for (const ent of fs.readdirSync(d, { withFileTypes: true })) {
