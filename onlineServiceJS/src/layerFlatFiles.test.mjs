@@ -8,6 +8,7 @@ import {
   layerGitWorkdirRootsForFileListing,
   listFlatRelativeFilesForLayer,
   resolveLayerGitLogContext,
+  clickedPathIsGitRepoRoot,
 } from './layerFs.mjs';
 
 test('layerGitWorkdirRootsForFileListing: 并列多仓返回多个根且带前缀', () => {
@@ -77,6 +78,13 @@ test('resolveLayerGitLogContext: 多仓时按路径前缀选对应 workdir 与 p
     assert(c);
     assert.equal(c.pathspec, 'hello_world/Cargo.lock');
     assert(c.work.endsWith(`${path.sep}somanyad-emailD`));
+
+    // T1: 多仓根 pathspec=null → 是仓库根
+    assert.equal(clickedPathIsGitRepoRoot(a), true);
+    // T2: 仓内子目录无嵌套 .git → 不是仓库根
+    assert.equal(clickedPathIsGitRepoRoot(b), false);
+    assert.equal(clickedPathIsGitRepoRoot(c), false);
+    assert.equal(clickedPathIsGitRepoRoot(null), false);
   } finally {
     if (prev === undefined) delete process.env.ONLINE_PROJECT_LAYERS;
     else process.env.ONLINE_PROJECT_LAYERS = prev;

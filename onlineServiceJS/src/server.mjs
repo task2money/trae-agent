@@ -68,6 +68,7 @@ import {
   readLayerMeta,
   resolvedParentLayerId,
   layerGitWorkdirRootsForFileListing,
+  clickedPathIsGitRepoRoot,
   createStackedLayer,
   markOriginRemoteTrackingToHead,
   layerGitRemoteSnapshot,
@@ -1112,7 +1113,8 @@ api.get('/layers/:layer_id/git/commit/latest-log', async (req, res) => {
   }
 });
 
-/** 与 Django ``forward_container_layer_git_log`` 及文件树侧栏一致：``text``、可选空列表 ``commits``。 */
+/** 与 Django ``forward_container_layer_git_log`` 及文件树侧栏一致：``text``、可选空列表 ``commits``；
+ *  点击目录为仓库根时额外返回 ``is_repo_root`` / ``current_branch``。 */
 api.get('/layers/:layer_id/git/log', async (req, res) => {
   const layerId = String(req.params.layer_id || '');
   let limit = 20;
@@ -1128,6 +1130,7 @@ api.get('/layers/:layer_id/git/log', async (req, res) => {
     return res.status(400).json({ detail: 'path 不合法' });
   }
   const { work, pathspec } = ctx;
+  const isRepoRoot = clickedPathIsGitRepoRoot(ctx);
   const args = [
     'log',
     `-${limit}`,
@@ -1137,10 +1140,26 @@ api.get('/layers/:layer_id/git/log', async (req, res) => {
   if (pathspec) args.push('--', pathspec);
   try {
     const t = (await gitExec(args, work)).replace(/\s+$/, '');
-    if (!t) {
-      return res.json({ text: '', commits: [] });
+    /** @type {{ text: string, commits: unknown[], is_repo_root: boolean, current_branch?: string }} */
+    const body = {
+      text: t || '',
+      commits: [],
+      is_repo_root: isRepoRoot,
+    };
+    if (isRepoRoot) {
+      const branchWork = pathspec ? path.join(work, pathspec) : work;
+      try {
+        const branch = String(await gitExec(['rev-parse', '--abbrev-ref', 'HEAD'], branchWork))
+          .trim()
+          .split('\n')[0];
+        if (branch) body.current_branch = branch;
+      } catch (branchErr) {
+        console.warn(
+          `[onlineServiceJS] git/log current_branch failed layer_id=${layerId} path=${rawPath}: ${String(branchErr?.message || branchErr)}`,
+        );
+      }
     }
-    return res.json({ text: t, commits: [] });
+    return res.json(body);
   } catch (e) {
     res.status(400).json({ detail: String(e.message || e) });
   }
