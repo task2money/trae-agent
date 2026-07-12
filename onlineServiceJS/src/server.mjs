@@ -1899,6 +1899,26 @@ for (const t of String(process.env.TRAE_UI_STALE_ACCESS_TOKENS || '')
 const port = parseInt(process.env.PORT || '8765', 10);
 const host = '0.0.0.0';
 
+/**
+ * Bind PORT immediately so host-network startups cannot lose the port during
+ * the await window of token exchange (otherwise another process / orphan race
+ * yields listen EADDRINUSE after exchange-refresh succeeds).
+ */
+function listenHttpServer() {
+  return new Promise((resolve, reject) => {
+    const server = app.listen(port, host, () => {
+      console.log(`[onlineServiceJS] server listening on http://${host}:${port}`);
+      resolve(server);
+    });
+    server.on('error', (err) => {
+      if (err?.code === 'EADDRINUSE') {
+        console.error(`[onlineServiceJS] port ${port} already in use (${err.message})`);
+      }
+      reject(err);
+    });
+  });
+}
+
 export async function main({
   appendInitLog = appendInitLogBestEffort,
   runBootstrapTokenExchangeOnlyFn = runBootstrapTokenExchangeOnly,
@@ -1926,6 +1946,27 @@ export async function main({
   const strict = ['1', 'true', 'yes', 'on'].includes(
     String(process.env.TASK_API_BOOTSTRAP_STRICT_STARTUP || '').toLowerCase()
   );
+
+  // Token-only test hook: do not bind PORT.
+  if (stopAfterBootstrapTokenExchangeOnly) {
+    try {
+      await runBootstrapTokenExchangeOnlyFn();
+    } catch (e) {
+      console.error('[onlineServiceJS] bootstrap (token) error:', e);
+      if (strict) process.exit(1);
+    }
+    return;
+  }
+
+  // Claim host PORT before any long await (token exchange).
+  const server = await listenHttpServer();
+  const shutdownForWatch = () => {
+    server.close(() => process.exit(0));
+    setTimeout(() => process.exit(0), 1500).unref();
+  };
+  process.once('SIGTERM', shutdownForWatch);
+  process.once('SIGINT', shutdownForWatch);
+
   let bootstrapCtx;
   try {
     bootstrapCtx = await runBootstrapTokenExchangeOnlyFn();
@@ -1934,7 +1975,6 @@ export async function main({
     if (strict) process.exit(1);
     bootstrapCtx = { skipped: true };
   }
-  if (stopAfterBootstrapTokenExchangeOnly) return;
   ensureStartupEmptyLayer();
   try {
     sweepDanglingLayerDirs();
@@ -1942,73 +1982,52 @@ export async function main({
     console.error('[onlineServiceJS] layer dir sweep error:', e);
   }
 
-  await new Promise((resolve, reject) => {
-    const server = app.listen(port, host, async () => {
-      console.log(`[onlineServiceJS] server listening on http://${host}:${port}`);
-      broadcast({ type: 'service_ready', port });
-      // register-reachability（server_url）与 SaaS 心跳须在 HTTP 已监听后立即执行，不得被引导克隆/写 YAML 阻塞。
-      try {
-        await registerReachabilityAfterBootstrap(bootstrapCtx);
-      } catch (e) {
-        logJson('error', 'reachability_failed', {
-          use_startup_trace: true,
-          ...errorLogFields(e),
-        });
-        process.exit(1);
-      }
-      if (!bootstrapCtx.skipped && bootstrapCtx.prefix) {
-        startSaasContainerHeartbeatLoop();
-        const hbDelay = String(process.env.TRAE_SAAS_HEARTBEAT_INITIAL_DELAY_SEC || '5').trim();
-        console.log(
-          `[onlineServiceJS] 已调度 SaaS 容器心跳（首跳延迟 ${hbDelay}s，间隔见 TRAE_SAAS_HEARTBEAT_INTERVAL_SEC）`,
-        );
-        startSaasLayerGraphPushLoop(() => buildLayersSnapshot(bootstrapCloneLayerId));
-        const lgDelay = String(process.env.TRAE_SAAS_LAYER_GRAPH_PUSH_INITIAL_DELAY_SEC || '8').trim();
-        console.log(
-          `[onlineServiceJS] 已调度 SaaS 层图推送（首跳延迟 ${lgDelay}s，间隔见 TRAE_SAAS_LAYER_GRAPH_PUSH_INTERVAL_SEC）`,
-        );
-      }
-      void (async () => {
-        try {
-          await runBootstrapAfterListen(bootstrapCtx);
-          try {
-            if (bootstrapCloneLayerId && bootstrapRegisterCloneJob) {
-              registerBootstrapCloneJob(bootstrapCloneLayerId);
-            }
-          } catch (e) {
-            console.error('[onlineServiceJS] bootstrap clone job 注册错误:', e);
-            if (strict) process.exit(1);
-          }
-          try {
-            await mirrorLayerGraphToTaskCloudSSE();
-          } catch {
-            /* 推层图至任务云为辅助通道，失败不阻断服务 */
-          }
-        } catch (e) {
-          const msg = String(e?.message || e || 'bootstrap failed').slice(0, 800);
-          // 与 bootstrap.mjs 的 BOOTSTRAP_FAILED 并列，确保失败一定出现在 relay 启动日志面板。
-          if (!msg.includes('BOOTSTRAP_FAILED')) {
-            console.error(`[onlineServiceJS] BOOTSTRAP_FAILED phase=post_listen ${msg}`);
-          }
-          console.error('[onlineServiceJS] bootstrap (post-listen) error:', e);
-          if (strict) process.exit(1);
-        }
-      })();
-      resolve();
+  broadcast({ type: 'service_ready', port });
+  // register-reachability（server_url）与 SaaS 心跳须在 HTTP 已监听后立即执行，不得被引导克隆/写 YAML 阻塞。
+  try {
+    await registerReachabilityAfterBootstrap(bootstrapCtx);
+  } catch (e) {
+    logJson('error', 'reachability_failed', {
+      use_startup_trace: true,
+      ...errorLogFields(e),
     });
-    server.on('error', (err) => {
-      if (err?.code === 'EADDRINUSE') {
-        console.error(`[onlineServiceJS] port ${port} already in use (${err.message})`);
+    process.exit(1);
+  }
+  if (!bootstrapCtx.skipped && bootstrapCtx.prefix) {
+    startSaasContainerHeartbeatLoop();
+    const hbDelay = String(process.env.TRAE_SAAS_HEARTBEAT_INITIAL_DELAY_SEC || '5').trim();
+    console.log(
+      `[onlineServiceJS] 已调度 SaaS 容器心跳（首跳延迟 ${hbDelay}s，间隔见 TRAE_SAAS_HEARTBEAT_INTERVAL_SEC）`,
+    );
+    startSaasLayerGraphPushLoop(() => buildLayersSnapshot(bootstrapCloneLayerId));
+    const lgDelay = String(process.env.TRAE_SAAS_LAYER_GRAPH_PUSH_INITIAL_DELAY_SEC || '8').trim();
+    console.log(
+      `[onlineServiceJS] 已调度 SaaS 层图推送（首跳延迟 ${lgDelay}s，间隔见 TRAE_SAAS_LAYER_GRAPH_PUSH_INTERVAL_SEC）`,
+    );
+  }
+  try {
+    await runBootstrapAfterListen(bootstrapCtx);
+    try {
+      if (bootstrapCloneLayerId && bootstrapRegisterCloneJob) {
+        registerBootstrapCloneJob(bootstrapCloneLayerId);
       }
-      reject(err);
-    });
-    const shutdownForWatch = () => {
-      server.close(() => process.exit(0));
-      setTimeout(() => process.exit(0), 1500).unref();
-    };
-    process.once('SIGTERM', shutdownForWatch);
-    process.once('SIGINT', shutdownForWatch);
-  });
+    } catch (e) {
+      console.error('[onlineServiceJS] bootstrap clone job 注册错误:', e);
+      if (strict) process.exit(1);
+    }
+    try {
+      await mirrorLayerGraphToTaskCloudSSE();
+    } catch {
+      /* 推层图至任务云为辅助通道，失败不阻断服务 */
+    }
+  } catch (e) {
+    const msg = String(e?.message || e || 'bootstrap failed').slice(0, 800);
+    if (!msg.includes('BOOTSTRAP_FAILED')) {
+      console.error(`[onlineServiceJS] BOOTSTRAP_FAILED phase=post_listen ${msg}`);
+    }
+    console.error('[onlineServiceJS] bootstrap (post-listen) error:', e);
+    if (strict) process.exit(1);
+  }
 }
 
 if (process.env.ONLINE_SERVICE_JS_SKIP_MAIN !== '1') {
