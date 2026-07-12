@@ -321,24 +321,33 @@ export function resolveAbsolutePathForLayerListedFile(layerId, rel) {
 
 /**
  * true：存在未提交/未暂存变更；false：工作区干净；null：非 git 或检测失败（与 Python layer_git.git_worktree_dirty 对齐）。
+ * 多仓并列时：任一仓库 dirty 即为 true（与容器 UI「多仓克隆任一有变更则 dirty」一致；
+ * 不可只查 layerPrimaryGitWorkdir，否则次仓有变更时文件变动列表有条目但 ztree 无「提交」）。
  */
 export function gitWorktreeDirty(layerId) {
   if (!layerId || !LAYER_ID_RE.test(String(layerId))) return null;
-  const work = layerPrimaryGitWorkdir(layerId);
-  if (!work) return null;
-  try {
-    const r = spawnSync(gitCmd(), ['status', '--porcelain'], {
-      cwd: work,
-      encoding: 'utf8',
-      maxBuffer: 10 * 1024 * 1024,
-      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
-      timeout: 60_000,
-    });
-    if (r.error || r.status !== 0) return null;
-    return (r.stdout || '').trim().length > 0;
-  } catch {
-    return null;
+  const roots = layerGitWorkdirRootsForFileListing(layerId);
+  if (!roots.length) return null;
+  let checked = 0;
+  for (const { workdir } of roots) {
+    if (!workdir || !dirHasGit(workdir)) continue;
+    try {
+      const r = spawnSync(gitCmd(), ['status', '--porcelain'], {
+        cwd: workdir,
+        encoding: 'utf8',
+        maxBuffer: 10 * 1024 * 1024,
+        env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+        timeout: 60_000,
+      });
+      if (r.error || r.status !== 0) continue;
+      checked += 1;
+      if ((r.stdout || '').trim().length > 0) return true;
+    } catch {
+      /* 单仓失败不短路；全部失败则下方返回 null */
+    }
   }
+  if (checked === 0) return null;
+  return false;
 }
 
 /**
@@ -490,35 +499,66 @@ export function layerGitRemoteSnapshot(layerId, opts = {}) {
 
   const upRef = run(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}']);
   const upstream = String(upRef.stdout || '').trim();
-  if (upRef.status !== 0 || !upstream) {
+  if (upRef.status === 0 && upstream) {
+    const count = run(['rev-list', '--count', '@{u}..HEAD']);
+    if (count.status !== 0) {
+      return {
+        is_git: true,
+        ahead: null,
+        no_upstream: false,
+        upstream,
+        current_branch,
+        compare_branch,
+      };
+    }
+    const n = parseInt(String(count.stdout || '').trim(), 10);
+    const ahead = Number.isFinite(n) && n >= 0 ? n : 0;
     return {
       is_git: true,
-      ahead: null,
-      no_upstream: true,
-      upstream: '',
-      current_branch,
-      compare_branch,
-    };
-  }
-
-  const count = run(['rev-list', '--count', '@{u}..HEAD']);
-  if (count.status !== 0) {
-    return {
-      is_git: true,
-      ahead: null,
+      ahead,
       no_upstream: false,
       upstream,
       current_branch,
       compare_branch,
     };
   }
-  const n = parseInt(String(count.stdout || '').trim(), 10);
-  const ahead = Number.isFinite(n) && n >= 0 ? n : 0;
+
+  // 无 @{u} 且无 origin/<current_branch>：回退 origin/HEAD（默认分支）算 ahead，
+  // 避免 feature 本地名与远端不一致时 no_upstream=true / ahead=null，ztree 推送与提交门控全灭。
+  /** @type {string[]} */
+  const defaultBranchCandidates = [];
+  const originHead = run(['symbolic-ref', '--quiet', 'refs/remotes/origin/HEAD']);
+  if (originHead.status === 0) {
+    const headRef = String(originHead.stdout || '').trim(); // refs/remotes/origin/master
+    const defaultBranch = normalizeGitBranchName(headRef);
+    if (defaultBranch) defaultBranchCandidates.push(defaultBranch);
+  }
+  for (const b of ['master', 'main']) {
+    if (!defaultBranchCandidates.includes(b)) defaultBranchCandidates.push(b);
+  }
+  for (const defaultBranch of defaultBranchCandidates) {
+    const remoteRef = `refs/remotes/origin/${defaultBranch}`;
+    const verify = run(['rev-parse', '--verify', remoteRef]);
+    if (verify.status !== 0) continue;
+    const count = run(['rev-list', '--count', `origin/${defaultBranch}..HEAD`]);
+    if (count.status !== 0) continue;
+    const n = parseInt(String(count.stdout || '').trim(), 10);
+    const ahead = Number.isFinite(n) && n >= 0 ? n : 0;
+    return {
+      is_git: true,
+      ahead,
+      no_upstream: false,
+      upstream: `origin/${defaultBranch}`,
+      current_branch,
+      compare_branch,
+    };
+  }
+
   return {
     is_git: true,
-    ahead,
-    no_upstream: false,
-    upstream,
+    ahead: null,
+    no_upstream: true,
+    upstream: '',
     current_branch,
     compare_branch,
   };

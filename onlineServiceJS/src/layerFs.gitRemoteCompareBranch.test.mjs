@@ -191,3 +191,43 @@ test('T8: 主仓在 base 分支但工作分支远程已对齐 → ahead=0', () =
     fs.rmSync(layers, { recursive: true, force: true });
   }
 });
+
+/**
+ * T9：本地 feature 无 @{u}、亦无 origin/<同名分支>，但 origin/HEAD→master 存在且 HEAD 超前 →
+ * ahead>0 且 no_upstream=false（否则 ztree 推送/提交门控全灭）。
+ */
+test('T9: 无上游时回退 origin/HEAD 计算 ahead', () => {
+  const layers = fs.mkdtempSync(path.join(os.tmpdir(), 'layer-compare-branch-t9-'));
+  const bare = path.join(layers, 'bare.git');
+  const prev = process.env.ONLINE_PROJECT_LAYERS;
+  process.env.ONLINE_PROJECT_LAYERS = layers;
+  try {
+    const lid = newLayerId();
+    const work = createRootLayer(lid);
+    git(layers, ['init', '--bare', bare]);
+    fs.rmSync(work, { recursive: true, force: true });
+    git(layers, ['clone', bare, work]);
+    git(work, ['config', 'user.email', 't@example.com']);
+    git(work, ['config', 'user.name', 't']);
+    fs.writeFileSync(path.join(work, 'a.txt'), '1\n');
+    git(work, ['add', 'a.txt']);
+    git(work, ['commit', '-m', 'init']);
+    git(work, ['branch', '-M', 'master']);
+    git(work, ['push', '-u', 'origin', 'master']);
+    git(work, ['checkout', '-b', 'feature/local-only']);
+    fs.writeFileSync(path.join(work, 'a.txt'), '2\n');
+    git(work, ['add', 'a.txt']);
+    git(work, ['commit', '-m', 'local feature']);
+    // feature/local-only 从未设置 upstream，且无 origin/feature/local-only
+
+    const snap = layerGitRemoteSnapshot(lid);
+    assert.equal(snap.is_git, true);
+    assert.equal(snap.no_upstream, false);
+    assert.ok(snap.ahead > 0, `expected ahead>0, got ${snap.ahead}`);
+    assert.match(String(snap.upstream || ''), /origin\/master/);
+  } finally {
+    if (prev === undefined) delete process.env.ONLINE_PROJECT_LAYERS;
+    else process.env.ONLINE_PROJECT_LAYERS = prev;
+    fs.rmSync(layers, { recursive: true, force: true });
+  }
+});
