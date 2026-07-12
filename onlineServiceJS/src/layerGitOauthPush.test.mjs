@@ -66,3 +66,32 @@ test('runLayerGithubOauthAccessPush: localhost GitLab + oauth_auth_by_repo 应�
 
   fs.rmSync(stateRoot, { recursive: true, force: true });
 });
+
+test('createGitlabMergeRequest: 将 web_url 映射为可用审查链接', async () => {
+  const { createGitlabMergeRequest } = await import('./layerGitOauthPush.mjs');
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () =>
+    new Response(
+      JSON.stringify({
+        web_url: 'https://gitlab.daydaymoney.com/ljy/somanyad/-/merge_requests/11',
+        iid: 11,
+        state: 'opened',
+      }),
+      { status: 201, headers: { 'Content-Type': 'application/json' } },
+    );
+  try {
+    const res = await createGitlabMergeRequest({
+      originUrl: 'https://gitlab.daydaymoney.com/ljy/somanyad.git',
+      owner: 'ljy',
+      repo: 'somanyad',
+      head: 'feature/x',
+      base: 'master',
+      accessToken: 'glpat-x',
+      title: 'MR test',
+    });
+    assert.equal(res.ok, true);
+    assert.equal(res.json.web_url, 'https://gitlab.daydaymoney.com/ljy/somanyad/-/merge_requests/11');
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
