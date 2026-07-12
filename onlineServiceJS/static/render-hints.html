@@ -81,6 +81,7 @@
     <script>
       const ACCESS_TOKEN = JSON.parse('__ACCESS_TOKEN_JSON__');
       document.getElementById('backLink').href =
+        String(location.pathname || '').replace(/\/render-hints\/?$/, '') ||
         '/ui/' + encodeURIComponent(ACCESS_TOKEN);
       (async () => {
         const pre = document.getElementById('out');

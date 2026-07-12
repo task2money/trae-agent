@@ -171,7 +171,14 @@ _docker_port_file="${STATE_ROOT}/runtime/.docker_mapped_port"
 echo -n "$HOST_PORT" > "$_docker_port_file"
 echo "[run.sh] Docker 随机映射端口: localhost:${HOST_PORT} -> 容器:${PORT}" >&2
 echo "[run.sh] 映射端口记录在: ${_docker_port_file}" >&2
-echo "[run.sh] 控制台: http://127.0.0.1:${HOST_PORT}/ui/${ACCESS_TOKEN}" >&2
+_ui_scope_t="${tenantId:-${TENANT_ID:-}}"
+_ui_scope_w="${workspaceId:-${WORKSPACE_ID:-}}"
+_ui_scope_task="${taskId:-${TASK_ID:-}}"
+if [[ -n "$_ui_scope_t" && -n "$_ui_scope_w" && -n "$_ui_scope_task" ]]; then
+  echo "[run.sh] 控制台: http://127.0.0.1:${HOST_PORT}/ui/tenant/${_ui_scope_t}/workspace/${_ui_scope_w}/task/${_ui_scope_task}/${ACCESS_TOKEN}" >&2
+else
+  echo "[run.sh] 控制台: http://127.0.0.1:${HOST_PORT}/ui/${ACCESS_TOKEN}" >&2
+fi
 
 docker run --rm -i --privileged \
   --cidfile "$_docker_cid_file" \
@@ -203,7 +210,14 @@ if [[ ! -d node_modules ]]; then
 fi
 
 echo "[run.sh] REPO_ROOT=$REPO_ROOT PORT=$PORT ACCESS_TOKEN=(set)" >&2
-echo "[run.sh] 控制台: http://127.0.0.1:${PORT}/ui/${ACCESS_TOKEN}" >&2
+_ui_scope_t="${tenantId:-${TENANT_ID:-}}"
+_ui_scope_w="${workspaceId:-${WORKSPACE_ID:-}}"
+_ui_scope_task="${taskId:-${TASK_ID:-}}"
+if [[ -n "$_ui_scope_t" && -n "$_ui_scope_w" && -n "$_ui_scope_task" ]]; then
+  echo "[run.sh] 控制台: http://127.0.0.1:${PORT}/ui/tenant/${_ui_scope_t}/workspace/${_ui_scope_w}/task/${_ui_scope_task}/${ACCESS_TOKEN}" >&2
+else
+  echo "[run.sh] 控制台: http://127.0.0.1:${PORT}/ui/${ACCESS_TOKEN}" >&2
+fi
 
 _pids="$(lsof -nP -iTCP:"${PORT}" -sTCP:LISTEN -t 2>/dev/null || true)"
 if [[ -n "$_pids" ]]; then

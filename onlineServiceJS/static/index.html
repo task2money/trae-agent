@@ -2393,8 +2393,9 @@
     }, BTN_DEBOUNCE_MS);
 
     document.getElementById('btnOpenRenderHints').onclick = () => {
+      const base = String(location.pathname || '').replace(/\/render-hints\/?$/, '');
       window.open(
-        '/ui/' + encodeURIComponent(ACCESS_TOKEN) + '/render-hints',
+        (base || '/ui/' + encodeURIComponent(ACCESS_TOKEN)) + '/render-hints',
         '_blank',
         'noopener,noreferrer',
       );

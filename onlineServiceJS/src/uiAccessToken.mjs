@@ -3,6 +3,8 @@
  * 仅「曾经是本进程 ACCESS_TOKEN」的值可换到当前 token，避免任意猜测撞库。
  */
 
+import { buildScopedUiPath } from './scopedUiPath.mjs';
+
 const staleAccessTokens = new Set();
 const MAX_STALE = 8;
 
@@ -43,7 +45,7 @@ export function resolveUiPathAccessToken(pathToken, currentToken) {
     return { ok: true, serveToken: current };
   }
   if (pathTok && isRememberedStaleAccessToken(pathTok)) {
-    return { ok: false, redirectTo: `/ui/${encodeURIComponent(current)}` };
+    return { ok: false, redirectTo: buildScopedUiPath(current) };
   }
   return { ok: false, unauthorized: true };
 }

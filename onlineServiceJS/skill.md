@@ -211,9 +211,11 @@ Dockerfile 基于 **ubuntu:24.04**（可通过构建参数 `BASE_IMAGE` / 环境
 
 ## Web 控制台
 
-- **入口**：`GET /ui/{access_token}` — 路径令牌须与当前 `ACCESS_TOKEN` 一致；若路径为换票前已记住的 bootstrap/旧 token，则 **302** 到 `/ui/{当前 ACCESS_TOKEN}`。未知 token 仍 **401**。本地开发可设 `ACCESS_TOKEN=dev-local-token`，页面为 **`http://localhost:8765/ui/dev-local-token`**。
-- **会话恢复**：`GET /api/session/ui-redirect`（query 或 `X-Access-Token`）在「当前或已记住旧 token」下返回 `{ access_token, ui_path, redirected }`，供打开中的控制台在 SSE 401 后自愈跳转。
-- **富文本呈现声明（表驱动 + 编辑器契约）**：控制台步骤区等按 JSON **声明各字段如何渲染**（纯文本 / 富文本 iframe 等），数据来自 **`GET /api/ui/agent-render-hints`**（查询参数或 `X-Access-Token` 与受保护 API 一致）。响应内 **`rich_text_editor`** 块提供与 **`sanitizeMachineContainerHtml`（`src/htmlSanitize.mjs`）逐字段一致** 的 **`html_allowlist`**（标签与属性表），供富文本编辑器配置白名单、导出校验或与 `presentation_modes.rich_iframe` 对齐；人读约定仍以业务侧 `machine_container.md` §7 为准。浏览器可在 **`GET /ui/{access_token}/render-hints`** 新窗口查看格式化后的该 JSON（与上述 API 同源）。
+- **入口（规范）**：`GET /ui/tenant/{tenantId}/workspace/{workspaceId}/task/{taskId}/{access_token}` — path 含三 ID，与任务云 API scoped 前缀对齐；路径令牌须与当前 `ACCESS_TOKEN` 一致。
+- **兼容入口**：`GET /ui/{access_token}` — 在能解析 `tenantId`/`workspaceId`/`taskId`（环境变量或 `TaskApiEndPoint`）时 **302** 到上述 scoped path；无 scope 时仍直接提供页面（本地 `ACCESS_TOKEN=dev-local-token` → `http://localhost:8765/ui/dev-local-token`）。
+- **旧 token 自愈**：若路径为换票前已记住的 bootstrap/旧 token，则 **302** 到当前 token 的规范 path。未知 token 仍 **401**。
+- **会话恢复**：`GET /api/session/ui-redirect`（query 或 `X-Access-Token`）在「当前或已记住旧 token」下返回 `{ access_token, ui_path, redirected }`（`ui_path` 为 scoped，有 scope 时），供打开中的控制台在 SSE 401 后自愈跳转。
+- **富文本呈现声明（表驱动 + 编辑器契约）**：控制台步骤区等按 JSON **声明各字段如何渲染**（纯文本 / 富文本 iframe 等），数据来自 **`GET /api/ui/agent-render-hints`**（查询参数或 `X-Access-Token` 与受保护 API 一致）。响应内 **`rich_text_editor`** 块提供与 **`sanitizeMachineContainerHtml`（`src/htmlSanitize.mjs`）逐字段一致** 的 **`html_allowlist`**（标签与属性表），供富文本编辑器配置白名单、导出校验或与 `presentation_modes.rich_iframe` 对齐；人读约定仍以业务侧 `machine_container.md` §7 为准。浏览器可在 **`…/{access_token}/render-hints`** 新窗口查看格式化后的该 JSON（与上述 API 同源）。
 - Docker 镜像从构建上下文复制 **`onlineServiceJS/static`**（与本包同源）；若缺少静态文件，返回简易 HTML 提示。
 - **页眉**：展示 **`REPO_ROOT`** 宿主仓库未推送提交数依赖 `GET /api/dev/service-repo-git-push`。**当前为占位响应**（不跑 `git rev-list`）。
 - **可写层变动**：依赖 `GET /api/layers/{layer_id}/diff/parent/files` 与 `GET /api/layers/{layer_id}/diff/parent/file?path=…`。由 `src/layerParentDiff.mjs` 对父层与当前层工作目录做递归条目对比（大目录有条目上限）；无父层时 JSON 带 `detail` 说明。
@@ -277,7 +279,7 @@ node src/server.mjs
 # 或: PORT=8765 node src/server.mjs
 ```
 
-浏览器：`http://127.0.0.1:8765/ui/your-secret`
+浏览器：`http://127.0.0.1:8765/ui/tenant/<tenantId>/workspace/<workspaceId>/task/<taskId>/<your-secret>`（无 scope 时可 `http://127.0.0.1:8765/ui/your-secret`）
 本 Skill：`http://127.0.0.1:8765/skill.md`
 
 ## Docker 与多架构镜像
