@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { spawn } from 'child_process';
 import YAML from 'yaml';
 import { resolveAgentConfigFromEnv } from './featureParamsEnvToYaml.mjs';
 import { appendFeatureParamsEnvLogBestEffort } from './featureParamsEnvLog.mjs';
@@ -38,6 +39,10 @@ import {
 } from './saasTaskCloud.mjs';
 import { hostMappedHttpPort } from './reachability.mjs';
 import { rememberStaleAccessToken } from './uiAccessToken.mjs';
+import {
+  collectRepoBranchPlans,
+  checkoutWorkBranchesForJobs,
+} from './bootstrapWorkBranch.mjs';
 
 export let bootstrapCloneLayerId = null;
 /** 为 true 时 server 须在引导结束后调用 registerBootstrapCloneJob（仅「任务详情已含仓库并完成引导克隆」） */
@@ -487,7 +492,29 @@ async function runOneBootstrapClone({
   }
 }
 
-async function cloneReposIntoSharedLayer(urls, credRoot, cloudPrefix, accessToken) {
+async function bootstrapGitExec(args, cwd, env = {}) {
+  return new Promise((resolve, reject) => {
+    const proc = spawn(gitCmd(), args, {
+      cwd,
+      env: { ...process.env, ...env, GIT_TERMINAL_PROMPT: '0' },
+    });
+    let out = '';
+    let err = '';
+    proc.stdout?.on('data', (c) => {
+      out += c.toString();
+    });
+    proc.stderr?.on('data', (c) => {
+      err += c.toString();
+    });
+    proc.on('error', reject);
+    proc.on('close', (code) => {
+      if (code === 0) resolve(out + err);
+      else reject(new Error((err || out || `git exit ${code}`).slice(-4000)));
+    });
+  });
+}
+
+async function cloneReposIntoSharedLayer(urls, credRoot, cloudPrefix, accessToken, branchPlans) {
   const trimmed = urls.map((u) => String(u || '').trim()).filter(Boolean);
   if (!trimmed.length) return null;
 
@@ -605,6 +632,49 @@ async function cloneReposIntoSharedLayer(urls, credRoot, cloudPrefix, accessToke
       kind: 'global',
       phase: 'bootstrap',
     });
+
+    const plans = branchPlans && typeof branchPlans === 'object' ? branchPlans : collectRepoBranchPlans({});
+    const sharedWork = String(plans.sharedWorkBranch || '').trim();
+    const byUrl = plans.byUrl instanceof Map ? plans.byUrl : new Map();
+    if (sharedWork || byUrl.size) {
+      console.log(
+        `[onlineServiceJS] BOOTSTRAP_PHASE=work_branch_checkout 开始将 ${jobs.length} 个仓库切换到工作分支（shared=${sharedWork || '(per-repo)'}）…`,
+      );
+      const checkoutLogLines = [];
+      const checkout = await checkoutWorkBranchesForJobs({
+        gitExec: bootstrapGitExec,
+        jobs,
+        plansByUrl: byUrl,
+        sharedWorkBranch: sharedWork,
+        appendLog: (line) => {
+          checkoutLogLines.push(line);
+          appendOutboundReqLog(line);
+          console.log(`[onlineServiceJS] ${line}`);
+        },
+      });
+      if (checkoutLogLines.length) {
+        try {
+          appendCloneLayerLog(layerId, `\n【工作分支切换】\n${checkoutLogLines.join('\n')}\n`);
+        } catch {
+          /* ignore */
+        }
+      }
+      if (!checkout.ok) {
+        const head = checkout.errors[0] || new Error('work branch checkout failed');
+        console.error(
+          `[onlineServiceJS] BOOTSTRAP_FAILED phase=work_branch_checkout ${String(head?.message || head).slice(0, 500)}`,
+        );
+        throw head;
+      }
+      console.log(
+        `[onlineServiceJS] BOOTSTRAP_PHASE=work_branch_checkout_done 工作分支切换完成（ok=${checkout.results.filter((r) => r.ok && !r.skipped).length}/${jobs.length}）`,
+      );
+    } else {
+      console.log(
+        '[onlineServiceJS] BOOTSTRAP_PHASE=work_branch_checkout_skip 任务未配置工作分支，跳过 checkout',
+      );
+    }
+
     return layerId;
   } catch (e) {
     if (bootstrapRepoLogState && bootstrapRepoLogState.layerId === layerId) {
@@ -716,11 +786,12 @@ export async function fetchBootstrapRepoInputs(prefix, accessToken, timeoutSec) 
     timeoutSec
   );
   const urls = collectRepoUrls(detail);
+  const branchPlans = collectRepoBranchPlans(detail);
   console.log(
-    `[onlineServiceJS] 任务详情已拉取（关联仓库 ${urls.length} 个），继续引导…`,
+    `[onlineServiceJS] 任务详情已拉取（关联仓库 ${urls.length} 个，工作分支=${branchPlans.sharedWorkBranch || '(未配置)'}），继续引导…`,
   );
   if (!urls.length) {
-    return { urls, credRoot: {} };
+    return { urls, credRoot: {}, detail, branchPlans };
   }
   await staggerBootstrapSaasCall();
   appendOutboundReqLog('bootstrap post-listen: repo-clone-credentials');
@@ -734,7 +805,7 @@ export async function fetchBootstrapRepoInputs(prefix, accessToken, timeoutSec) 
     credResp && typeof credResp.repo_clone_credentials === 'object'
       ? credResp.repo_clone_credentials
       : {};
-  return { urls, credRoot };
+  return { urls, credRoot, detail, branchPlans };
 }
 
 function bootstrapTimeoutSec() {
@@ -1144,10 +1215,12 @@ export async function runBootstrapAfterListen(ctx) {
 
   let urls = [];
   let credRoot = {};
+  let branchPlans = { sharedWorkBranch: '', byUrl: new Map() };
   try {
     const repoInputs = await fetchBootstrapRepoInputs(prefix, newAccess, timeoutSec);
     urls = repoInputs.urls;
     credRoot = repoInputs.credRoot;
+    branchPlans = repoInputs.branchPlans || branchPlans;
   } catch (e) {
     const wrapped =
       String(e?.message || '').includes('/server-container-token/repo-clone-credentials/')
@@ -1164,7 +1237,13 @@ export async function runBootstrapAfterListen(ctx) {
   if (urls.length) {
     console.log('[onlineServiceJS] BOOTSTRAP_PHASE=clone_begin 任务详情已就绪，开始项目克隆…');
     try {
-      bootstrapCloneLayerId = await cloneReposIntoSharedLayer(urls, credRoot, prefix, newAccess);
+      bootstrapCloneLayerId = await cloneReposIntoSharedLayer(
+        urls,
+        credRoot,
+        prefix,
+        newAccess,
+        branchPlans,
+      );
     } catch (e) {
       console.error(
         `[onlineServiceJS] BOOTSTRAP_FAILED phase=clone ${String(e?.message || e).slice(0, 500)}`,
