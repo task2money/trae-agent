@@ -48,6 +48,8 @@ export let bootstrapCloneLayerId = null;
 /** 为 true 时 server 须在引导结束后调用 registerBootstrapCloneJob（仅「任务详情已含仓库并完成引导克隆」） */
 export let bootstrapRegisterCloneJob = false;
 export let startupEmptyLayerId = null;
+/** 最近一次 bootstrap 拉取的 task-detail（供 auto_run 首指令/交付） */
+export let lastBootstrapTaskDetail = null;
 
 /**
  * 多仓引导克隆期间：各仓 stderr 并行写入此结构，GET /api/repos/bootstrap-clone-log 再拼成 text 并返回 segments。
@@ -1221,6 +1223,7 @@ export async function runBootstrapAfterListen(ctx) {
     urls = repoInputs.urls;
     credRoot = repoInputs.credRoot;
     branchPlans = repoInputs.branchPlans || branchPlans;
+    lastBootstrapTaskDetail = repoInputs.detail || null;
   } catch (e) {
     const wrapped =
       String(e?.message || '').includes('/server-container-token/repo-clone-credentials/')

@@ -3,8 +3,9 @@ import { spawn } from 'child_process';
 import path from 'path';
 import crypto from 'crypto';
 
-import { bootstrapCloneLayerId } from './bootstrap.mjs';
+import { bootstrapCloneLayerId, lastBootstrapTaskDetail } from './bootstrap.mjs';
 import { normalizeJobCommandEnv } from './normalizeJobCommandEnv.mjs';
+import { runAutoRunDelivery } from './autoRunOrchestration.mjs';
 import {
   jobsStatePath,
   configFilePath,
@@ -384,6 +385,10 @@ export async function createJob(body) {
     command_kind,
     command_env: body.env && typeof body.env === 'object' ? body.env : null,
     prior_context_job_id: prior_context_job_id || null,
+    auto_run_first: Boolean(body.auto_run_first),
+    auto_run_commit_message: body.auto_run_commit_message
+      ? String(body.auto_run_commit_message).trim()
+      : null,
   };
   jobs.set(id, rec);
   saveState();
@@ -577,6 +582,25 @@ function runJobAsync(rec, workDir) {
     void mirrorLayerGraphToTaskCloudSSE().catch(() => {});
     if (!wasInterrupted) {
       void drainQueuedJobsForLayer(rec.layer_id, rec.id);
+    }
+    if (!wasInterrupted && rec.status === 'completed' && rec.auto_run_first) {
+      const detail = lastBootstrapTaskDetail;
+      const commitMessage =
+        String(rec.auto_run_commit_message || '').trim() ||
+        String(detail?.task?.title || '').trim() ||
+        'auto_run';
+      const identities = Array.isArray(detail?.repo_git_identities) ? detail.repo_git_identities : [];
+      const targetBranch = String(detail?.task?.target_branch || '').trim();
+      void runAutoRunDelivery({
+        layerId: rec.layer_id,
+        commitMessage,
+        identities,
+        targetBranch,
+      }).catch((e) => {
+        console.error(
+          `[jobsRuntime] AUTO_RUN_DELIVERY unexpected error: ${String(e?.message || e).slice(0, 400)}`,
+        );
+      });
     }
   });
   proc.on('error', (e) => {
