@@ -33,7 +33,9 @@ import {
   appendCloneLayerLog,
   prepareOauthHttpsGitClone,
   fetchRepoCloneCredentialsOnly,
+  lastBootstrapTaskDetail,
 } from './bootstrap.mjs';
+import { maybeStartAutoRunFirstInstruction } from './autoRunOrchestration.mjs';
 import { registerReachabilityAfterBootstrap } from './reachability.mjs';
 import {
   taskApiPrefix,
@@ -2076,6 +2078,18 @@ export async function main({
     } catch (e) {
       console.error('[onlineServiceJS] bootstrap clone job 注册错误:', e);
       if (strict) process.exit(1);
+    }
+    try {
+      await maybeStartAutoRunFirstInstruction({
+        detail: lastBootstrapTaskDetail,
+        layerId: bootstrapCloneLayerId,
+        createJobFn: createJob,
+      });
+    } catch (e) {
+      console.error(
+        `[onlineServiceJS] AUTO_RUN_FIRST_INSTRUCTION_FAILED ${String(e?.message || e).slice(0, 500)}`,
+      );
+      // 不阻断主服务；auto_run 首指令失败可在详情页手动重试
     }
     try {
       await mirrorLayerGraphToTaskCloudSSE();
