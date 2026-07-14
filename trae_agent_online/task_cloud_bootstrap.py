@@ -68,43 +68,76 @@ def git_clone_remote_for_ssh_pem(canonical_url: str) -> str:
     return f"git@{host}:{path_body}"
 
 
-def extract_git_repo_urls(task_detail: dict) -> list[str]:
-    """从 task-detail 响应收集待克隆地址，兼容 `git_repo` 与 `git_repos[]` 结构。"""
-    out: list[str] = []
+def extract_git_repo_clone_jobs(task_detail: dict) -> list[dict[str, str]]:
+    """从 task-detail 收集 {url, clone_alias}；优先 git_repo_entries。"""
+    out: list[dict[str, str]] = []
     seen: set[str] = set()
 
-    def _add(raw: str | None) -> None:
-        if not raw:
+    def _add(raw_url: str | None, raw_alias: str | None = None) -> None:
+        if not raw_url:
             return
-        u = raw.strip()
+        u = str(raw_url).strip()
         if not u or u in seen:
             return
         seen.add(u)
-        out.append(u)
+        out.append({"url": u, "clone_alias": str(raw_alias or "").strip()})
 
-    def _collect_repo_list(value: Any) -> None:
+    def _collect_entries(entries: Any) -> bool:
+        if not isinstance(entries, list) or not entries:
+            return False
+        any_hit = False
+        for item in entries:
+            if not isinstance(item, dict):
+                continue
+            url = item.get("url") or item.get("repo_url") or item.get("git_repo")
+            if not url:
+                continue
+            _add(url, item.get("clone_alias") or item.get("alias"))
+            any_hit = True
+        return any_hit
+
+    def _collect(value: Any) -> None:
         if isinstance(value, str):
             _add(value)
             return
         if isinstance(value, list):
             for item in value:
-                _collect_repo_list(item)
+                _collect(item)
             return
         if not isinstance(value, dict):
             return
-        _add(value.get("git_repo") or value.get("url") or value.get("repo_url"))
+        if _collect_entries(value.get("git_repo_entries")):
+            return
+        _add(
+            value.get("git_repo") or value.get("url") or value.get("repo_url"),
+            value.get("clone_alias") or value.get("alias"),
+        )
         nested = value.get("git_repos")
         if nested is not None:
-            _collect_repo_list(nested)
+            _collect(nested)
 
-    _collect_repo_list(task_detail.get("project_repos"))
-    _collect_repo_list(task_detail.get("git_repos"))
+    _collect(task_detail.get("project_repos"))
+    _collect_entries(task_detail.get("git_repo_entries"))
+    _collect(task_detail.get("git_repos"))
 
     task_obj = task_detail.get("task")
     if isinstance(task_obj, dict):
-        _collect_repo_list(task_obj.get("git_repos"))
+        _collect_entries(task_obj.get("git_repo_entries"))
+        _collect(task_obj.get("git_repos"))
         params = task_obj.get("parameters")
         if isinstance(params, dict):
-            for key in ("git_repos", "project_urls", "project_repos", "repos", "repositories"):
-                _collect_repo_list(params.get(key))
+            for key in (
+                "git_repo_entries",
+                "git_repos",
+                "project_urls",
+                "project_repos",
+                "repos",
+                "repositories",
+            ):
+                _collect(params.get(key))
     return out
+
+
+def extract_git_repo_urls(task_detail: dict) -> list[str]:
+    """从 task-detail 响应收集待克隆地址，兼容 `git_repo` 与 `git_repos[]` 结构。"""
+    return [j["url"] for j in extract_git_repo_clone_jobs(task_detail)]
