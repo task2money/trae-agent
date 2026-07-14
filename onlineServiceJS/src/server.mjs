@@ -34,6 +34,7 @@ import {
   prepareOauthHttpsGitClone,
   fetchRepoCloneCredentialsOnly,
   lastBootstrapTaskDetail,
+  collectRepoCloneJobs,
 } from './bootstrap.mjs';
 import { maybeStartAutoRunFirstInstruction } from './autoRunOrchestration.mjs';
 import { registerReachabilityAfterBootstrap } from './reachability.mjs';
@@ -66,7 +67,7 @@ import {
   resolveLayerGitLogContext,
   resolveAbsolutePathForLayerListedFile,
   deleteLayerTree,
-  repoDirNameFromUrl,
+  resolveRepoCloneDirName,
   writeLayerMeta,
   readLayerMeta,
   resolvedParentLayerId,
@@ -813,7 +814,14 @@ api.post('/repos/reclone', async (req, res) => {
     }
   }
   if (!layerId) return res.status(400).json({ detail: '引导克隆层不存在' });
-  const name = repoDirNameFromUrl(repoUrl);
+  const bodyAlias = String(req.body?.clone_alias || req.body?.cloneAlias || '').trim();
+  let resolvedAlias = bodyAlias;
+  if (!resolvedAlias && lastBootstrapTaskDetail) {
+    const jobs = collectRepoCloneJobs(lastBootstrapTaskDetail);
+    const hit = jobs.find((j) => String(j.url || '').trim() === repoUrl);
+    if (hit?.cloneAlias) resolvedAlias = hit.cloneAlias;
+  }
+  const name = resolveRepoCloneDirName(repoUrl, resolvedAlias);
   let target = path.join(layerPath(layerId), name);
   if (fs.existsSync(target)) fs.rmSync(target, { recursive: true, force: true });
   fs.mkdirSync(target, { recursive: true });

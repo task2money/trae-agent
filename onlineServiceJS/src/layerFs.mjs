@@ -753,6 +753,19 @@ export function deleteLayerTree(layerId) {
  * 从 clone URL 推导层内子目录名。须支持 HTTPS 与 SCP 风格（`git@host:group/repo.git`）；
  * 后者不能用 WHATWG URL 解析，否则会落到默认 `repo`，多仓并行克隆互相踩目录。
  */
+export function sanitizeCloneDirName(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return '';
+  return s.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^[-._]+|[-._]+$/g, '') || '';
+}
+
+/** 优先使用用户别名，否则从 URL 推导。 */
+export function resolveRepoCloneDirName(url, cloneAlias) {
+  const fromAlias = sanitizeCloneDirName(cloneAlias);
+  if (fromAlias) return fromAlias;
+  return repoDirNameFromUrl(url);
+}
+
 export function repoDirNameFromUrl(url) {
   const raw = String(url || '').trim();
   if (!raw) return 'repo';
@@ -770,7 +783,7 @@ export function repoDirNameFromUrl(url) {
   }
   let base = pathPart.split('/').filter(Boolean).pop() || 'repo';
   if (base.toLowerCase().endsWith('.git')) base = base.slice(0, -4);
-  return base.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^[-._]+|[-._]+$/g, '') || 'repo';
+  return sanitizeCloneDirName(base) || 'repo';
 }
 
 export function resolvedParentLayerId(layerId, knownIds, jobs) {
