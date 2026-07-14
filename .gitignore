@@ -203,3 +203,8 @@ onlineServiceJS/auth.json
 # Docker 构建：code-server 预下载 tarball（由 docker/fetch-code-server-bundles.sh 生成）
 onlineServiceJS/docker/code-server/*.tar.gz
 /bin/
+
+# macOS Finder
+.DS_Store
+._.DS_Store
+._*
