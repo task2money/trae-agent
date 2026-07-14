@@ -42,3 +42,18 @@ test('normalizeAtMentionContextPack truncates oversized thread', () => {
   assert.ok(r.pack.comment_thread.length < 8)
   assert.ok(Buffer.byteLength(JSON.stringify(r.pack), 'utf8') <= CONTEXT_PACK_MAX_BYTES)
 })
+
+test('normalizeAtMentionContextPack keeps trigger_comment on run', () => {
+  const r = normalizeAtMentionContextPack({
+    at_mention_run: {
+      run_id: 'r1',
+      parent_comment_id: 'c1',
+      agent_comment_id: 'a1',
+      trigger_comment: { id: 'c1', content: 'run me' },
+    },
+    task: {},
+    comment_thread: [{ kind: 'human', id: 'c1', content: 'run me' }],
+  })
+  assert.equal(r.ok, true)
+  assert.equal(r.pack.at_mention_run.trigger_comment.content, 'run me')
+})

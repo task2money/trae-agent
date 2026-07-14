@@ -37,6 +37,10 @@ import {
   collectRepoCloneJobs,
 } from './bootstrap.mjs';
 import { maybeStartAutoRunFirstInstruction } from './autoRunOrchestration.mjs';
+import {
+  detailHasAtMentionRun,
+  maybeStartAtMentionJob,
+} from './atMentionOrchestration.mjs';
 import { registerReachabilityAfterBootstrap } from './reachability.mjs';
 import {
   taskApiPrefix,
@@ -2112,16 +2116,28 @@ export async function main({
       if (strict) process.exit(1);
     }
     try {
-      await maybeStartAutoRunFirstInstruction({
-        detail: lastBootstrapTaskDetail,
-        layerId: bootstrapCloneLayerId,
-        createJobFn: createJob,
-      });
+      // at_mention_run 与 auto_run 互斥：有 ContextPack 则跳过 auto_run 首指令
+      if (detailHasAtMentionRun(lastBootstrapTaskDetail)) {
+        await maybeStartAtMentionJob({
+          detail: lastBootstrapTaskDetail,
+          layerId: bootstrapCloneLayerId,
+          createJobFn: createJob,
+        });
+      } else {
+        await maybeStartAutoRunFirstInstruction({
+          detail: lastBootstrapTaskDetail,
+          layerId: bootstrapCloneLayerId,
+          createJobFn: createJob,
+        });
+      }
     } catch (e) {
+      const label = detailHasAtMentionRun(lastBootstrapTaskDetail)
+        ? 'AT_MENTION_JOB_FAILED'
+        : 'AUTO_RUN_FIRST_INSTRUCTION_FAILED';
       console.error(
-        `[onlineServiceJS] AUTO_RUN_FIRST_INSTRUCTION_FAILED ${String(e?.message || e).slice(0, 500)}`,
+        `[onlineServiceJS] ${label} ${String(e?.message || e).slice(0, 500)}`,
       );
-      // 不阻断主服务；auto_run 首指令失败可在详情页手动重试
+      // 不阻断主服务；失败可在详情页手动重试
     }
     try {
       await mirrorLayerGraphToTaskCloudSSE();
