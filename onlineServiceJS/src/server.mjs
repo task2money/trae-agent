@@ -95,6 +95,10 @@ import {
   getJobEvents,
 } from './jobsRuntime.mjs';
 import { getJobStepsForLayer } from './jobSteps.mjs';
+import {
+  bundledAutoRunStepsTemplatePath,
+  readAutoRunStepsMarkdown,
+} from './autoRunSteps.mjs';
 import { getLayerParentDiffFiles, getLayerParentUnifiedDiff } from './layerParentDiff.mjs';
 import { gitCmd, gitCloneConfigArgs, formatGitExecDebugLine } from './gitCmd.mjs';
 import { suggestStagedCommitMessage } from './stagedCommitSuggest.mjs';
@@ -524,6 +528,26 @@ api.get('/saas-heartbeat-probe', (req, res) => {
 /** Agent 步骤字段 → 富文本呈现策略（表驱动）；前端 GET 后按 step_rows / tool_expansion / tail_rows 渲染 */
 api.get('/ui/agent-render-hints', (req, res) => {
   res.json(getAgentRenderHints());
+});
+
+/** 镜像内 autoRunStep.md（任务详情 / 自动运行说明 live 源） */
+api.get('/auto-run-steps', (req, res) => {
+  let result = readAutoRunStepsMarkdown();
+  if (!result.ok) {
+    const bundled = bundledAutoRunStepsTemplatePath(serviceRoot());
+    result = readAutoRunStepsMarkdown(bundled);
+    if (result.ok) {
+      result = { ...result, source: 'bundled_template' };
+    }
+  }
+  if (!result.ok) {
+    return res.status(404).json({ detail: result.detail || 'autoRunStep.md not found' });
+  }
+  res.json({
+    markdown: result.markdown,
+    path: result.path,
+    source: result.source,
+  });
 });
 
 api.get('/layers/empty-root', (req, res) => {
