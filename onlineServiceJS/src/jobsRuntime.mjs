@@ -33,6 +33,7 @@ import {
 } from './layerFs.mjs';
 import { broadcast } from './sseHub.mjs';
 import { resetExecStream, appendExecStream, completeExecStream } from './execStream.mjs';
+import { startAgentStepPoller } from './jobStepEvents.mjs';
 import { publishLayerGraphSnapshotToSaas } from './saasTaskCloud.mjs';
 
 /** @type {Map<string, object>} */
@@ -560,6 +561,18 @@ function runJobAsync(rec, workDir) {
   } catch {
     /* ignore */
   }
+  /** Trae：每完成一个 agent step 写一条 phase=step 事件，供 job-stream / 执行日志逐步刷新 */
+  let stopStepPoller = () => {};
+  if (rec.command_kind === 'trae') {
+    stopStepPoller = startAgentStepPoller({
+      trajPath: trajectoryFile || '',
+      taeRoot: jobLogsTaeJsonPath(rec.id),
+      intervalMs: 750,
+      onNewStep: (_step, message) => {
+        recordJobEvent(rec.id, 'step', message);
+      },
+    });
+  }
   rec.status = 'running';
   running.set(rec.id, proc);
   saveState();
@@ -567,6 +580,11 @@ function runJobAsync(rec, workDir) {
   recordJobEvent(rec.id, 'running');
   void mirrorLayerGraphToTaskCloudSSE().catch(() => {});
   proc.on('close', (code) => {
+    try {
+      stopStepPoller();
+    } catch {
+      /* ignore */
+    }
     running.delete(rec.id);
     rec.exit_code = code;
     const wasInterrupted = rec.status === 'interrupted';
@@ -604,6 +622,11 @@ function runJobAsync(rec, workDir) {
     }
   });
   proc.on('error', (e) => {
+    try {
+      stopStepPoller();
+    } catch {
+      /* ignore */
+    }
     running.delete(rec.id);
     rec.status = 'failed';
     rec.exit_code = -1;
