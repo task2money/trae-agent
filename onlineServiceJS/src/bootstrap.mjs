@@ -39,6 +39,7 @@ import {
 } from './saasTaskCloud.mjs';
 import { hostMappedHttpPort } from './reachability.mjs';
 import { rememberStaleAccessToken } from './uiAccessToken.mjs';
+import { mapPool, bootstrapCloneConcurrencyFromEnv } from './mapPool.mjs';
 import {
   collectRepoBranchPlans,
   checkoutWorkBranchesForJobs,
@@ -620,17 +621,22 @@ async function cloneReposIntoSharedLayer(urlsOrJobs, credRoot, cloudPrefix, acce
       );
     }
 
-    const clonePromises = jobs.map((job) =>
-      runOneBootstrapClone({
-        job,
-        n,
-        credRoot,
-        cloudPrefix,
-        accessToken,
-      })
+    const concurrency = bootstrapCloneConcurrencyFromEnv();
+    appendCloneLayerLog(
+      layerId,
+      `【项目克隆】并行克隆 ${n} 个仓库，并发上限 ${concurrency}\n`,
     );
-
-    const outcomes = await Promise.all(clonePromises);
+    const cloneFactories = jobs.map(
+      (job) => () =>
+        runOneBootstrapClone({
+          job,
+          n,
+          credRoot,
+          cloudPrefix,
+          accessToken,
+        }),
+    );
+    const outcomes = await mapPool(cloneFactories, concurrency);
     const errors = [];
     for (let idx = 0; idx < jobs.length; idx++) {
       const o = outcomes[idx];
