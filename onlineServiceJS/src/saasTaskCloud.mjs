@@ -489,6 +489,37 @@ export function startSaasContainerHeartbeatLoop() {
  * @param {null|{ layers?: unknown[], jobs?: unknown[], layers_root?: string, bootstrap_layer_id?: string|null }} snapshot
  * @returns {Promise<boolean>} 是否上报成功（失败静默，供定时循环使用）
  */
+/**
+ * 容器请求 SaaS 释放所属机器节点（终态收尾后调用）。
+ * @param {{ terminal_kind?: string, reason?: string }} [opts]
+ * @returns {Promise<boolean>}
+ */
+export async function postRequestMachineRelease(opts = {}) {
+  let cloudPrefix;
+  try {
+    cloudPrefix = taskApiPrefix();
+  } catch {
+    return false;
+  }
+  const accessToken = String(process.env.ACCESS_TOKEN || '').trim();
+  if (!cloudPrefix || !accessToken) return false;
+  const url = `${cloudPrefix.replace(/\/$/, '')}/server-container-token/request-machine-release/`;
+  const terminalKind = String(opts.terminal_kind || '').trim() || 'cancelled';
+  const reason = String(opts.reason || `task_status_${terminalKind}`).trim();
+  const body = {
+    access_token: accessToken,
+    terminal_kind: terminalKind,
+    reason,
+  };
+  try {
+    const data = await postJson(url, body, 20);
+    return Boolean(data?.ok ?? data?.status === 'ok');
+  } catch (e) {
+    console.error(`[saasTaskCloud] request-machine-release failed: ${formatErrorWithCause(e)}`);
+    return false;
+  }
+}
+
 export async function publishLayerGraphSnapshotToSaas(snapshot) {
   if (!snapshot || typeof snapshot !== 'object') return false;
   let cloudPrefix;

@@ -666,6 +666,22 @@ api.post('/jobs/:job_id/interrupt', (req, res) => {
   }
 });
 
+api.post('/task-lifecycle/shutdown', (req, res) => {
+  // 立即 202，收尾异步执行，避免 SaaS/Events 出站 HTTP 阻塞。
+  res.status(202).json({ ok: true, accepted: true });
+  void import('./taskLifecycleShutdown.mjs')
+    .then(({ runTerminalShutdown }) =>
+      runTerminalShutdown(req.body || {}, {
+        exitProcess: !['1', 'true', 'yes', 'on'].includes(
+          String(process.env.TRAE_SKIP_SHUTDOWN_EXIT || '').toLowerCase(),
+        ),
+      }),
+    )
+    .catch((e) => {
+      console.error(`[onlineServiceJS] task-lifecycle/shutdown failed: ${e?.message || e}`);
+    });
+});
+
 api.delete('/jobs/:job_id', (req, res) => {
   try {
     res.json(deleteJob(req.params.job_id));
