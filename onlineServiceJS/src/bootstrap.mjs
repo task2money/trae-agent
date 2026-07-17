@@ -82,6 +82,30 @@ function rebuildBootstrapParallelLogText() {
 }
 
 /**
+ * 引导克隆存在失败时的日志页脚：点名失败仓（目录名 + URL），避免仅写「存在失败」。
+ * @param {{ raw: string, repoDir: string, errMsg?: string }[]} failedJobs
+ * @returns {string}
+ */
+export function formatBootstrapCloneFailureFooter(failedJobs) {
+  const list = Array.isArray(failedJobs) ? failedJobs : [];
+  const lines = ['', '【项目克隆】已结束（存在失败）。'];
+  if (list.length) {
+    lines.push(`失败仓库（${list.length}）：`);
+    for (const j of list) {
+      const name = path.basename(String(j?.repoDir || '')) || '(unknown)';
+      const url = String(j?.raw || '').trim() || '(no-url)';
+      const errOneLine = String(j?.errMsg || '')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 200);
+      lines.push(errOneLine ? `- ${name} — ${url}（${errOneLine}）` : `- ${name} — ${url}`);
+    }
+  }
+  lines.push('');
+  return lines.join('\n');
+}
+
+/**
  * 引导多仓并行克隆进行中时供 GET /api/repos/bootstrap-clone-log 返回 `segments`（按任务详情仓库顺序）。
  * @param {string} layerId
  * @returns {{ repo_url: string, text: string }[] | null}
@@ -638,27 +662,33 @@ async function cloneReposIntoSharedLayer(urlsOrJobs, credRoot, cloudPrefix, acce
     );
     const outcomes = await mapPool(cloneFactories, concurrency);
     const errors = [];
+    /** @type {{ raw: string, repoDir: string, index: number, errMsg: string }[]} */
+    const failedJobs = [];
     for (let idx = 0; idx < jobs.length; idx++) {
       const o = outcomes[idx];
       if (o.ok) continue;
       errors.push(o.err);
       const job = jobs[idx];
       const msg = o.err?.message || String(o.err);
+      failedJobs.push({ raw: job.raw, repoDir: job.repoDir, index: job.index, errMsg: msg });
       const ent = bootstrapRepoLogState.bufs.get(job.raw);
       if (ent) {
         ent.failNote = `\n[bootstrap-clone] 克隆失败: ${msg}\n`;
       }
+      const repoName = path.basename(job.repoDir);
       await postCloneProgress(
         cloudPrefix,
         accessToken,
         0,
-        `【项目克隆】(${idx + 1}/${n}) 失败: ${msg.slice(0, 500)}`,
+        `【项目克隆】(${idx + 1}/${n}) 失败 ${repoName}: ${msg.slice(0, 500)}`,
         job.raw,
         { phase: 'bootstrap', index: idx + 1, total: n }
       );
     }
 
-    const footer = errors.length ? '\n【项目克隆】已结束（存在失败）。\n' : '\n【项目克隆】克隆完成。\n';
+    const footer = errors.length
+      ? formatBootstrapCloneFailureFooter(failedJobs)
+      : '\n【项目克隆】克隆完成。\n';
     const full = rebuildBootstrapParallelLogText() + footer;
     clearCloneLayerLog(layerId);
     appendCloneLayerLog(layerId, full);
@@ -667,15 +697,13 @@ async function cloneReposIntoSharedLayer(urlsOrJobs, credRoot, cloudPrefix, acce
 
     if (errors.length) {
       const head = errors[0];
-      const msg = head?.message || String(head);
-      await postCloneProgress(
-        cloudPrefix,
-        accessToken,
-        0,
-        `【项目克隆】未完成：${msg}`.slice(0, 2000),
-        null,
-        { kind: 'global', phase: 'bootstrap' }
-      );
+      const nameList = failedJobs.map((j) => path.basename(j.repoDir)).join('、');
+      const summary =
+        `【项目克隆】未完成：失败 ${failedJobs.length}/${n} 个仓库：${nameList}`.slice(0, 2000);
+      await postCloneProgress(cloudPrefix, accessToken, 0, summary, null, {
+        kind: 'global',
+        phase: 'bootstrap',
+      });
       throw head;
     }
     await postCloneProgress(cloudPrefix, accessToken, 100, '【项目克隆】仓库克隆已完成', null, {

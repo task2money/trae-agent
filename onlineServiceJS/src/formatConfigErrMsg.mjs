@@ -20,7 +20,15 @@ export function formatConfigErrMsg(actionLabel, rawText) {
   detail = String(detail || '').trim();
   if (!detail) detail = '请求失败';
   else if (/^not found$/i.test(detail)) {
-    detail = '当前尚无配置文件，请先上传配置';
+    // 本地无文件且 SaaS 回源仍失败时：引导用响应头 / data-traceId 排查，不再暗示「请先上传」。
+    if (prefix === '拉取配置失败') {
+      return '拉取配置失败，请根据traceId 寻找原因';
+    }
+    detail = '请根据traceId 寻找原因';
   }
-  return prefix + '：' + detail;
+  const msg = prefix + '：' + detail;
+  if (prefix === '拉取配置失败' && !/traceId/i.test(msg)) {
+    return `${msg}（请根据traceId 寻找原因）`;
+  }
+  return msg;
 }

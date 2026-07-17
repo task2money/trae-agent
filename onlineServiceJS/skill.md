@@ -75,7 +75,7 @@ Dockerfile 基于 **ubuntu:24.04**（可通过构建参数 `BASE_IMAGE` / 环境
 |------|------|------|
 | `POST` | `/api/config` | `multipart/form-data`，字段名 `file`，内容为 YAML。校验通过后写入 `service_config.yaml`。 |
 | `POST` | `/api/config/raw` | 查询参数 `yaml=`（仅适合较短内容；大文件请用 multipart）。 |
-| `GET` | `/api/config` | 返回 `path` 与 `yaml` 文本；若尚未推送则 404。 |
+| `GET` | `/api/config` | 返回 `path`、`yaml` 与 `source`（`local` \| `saas`）。本地无 `service_config.yaml` 时回源 SaaS `feature-params-env` 落盘后再返回；回源不可用或失败则 404/502。 |
 
 ## 远程仓库克隆
 
@@ -161,7 +161,7 @@ Dockerfile 基于 **ubuntu:24.04**（可通过构建参数 `BASE_IMAGE` / 环境
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | `GET` | `/api/repos/clone-log/{layer_id}` | 克隆过程文本日志（内存缓冲）。 |
-| `GET` | `/api/repos/bootstrap-clone-log` | 引导批量克隆日志。JSON：`text`（整段，与任务详情仓库顺序拼接）+ 多仓并行克隆进行中时另含 **`segments`**: `[{ repo_url, text }]`，与 SaaS/任务页按仓折叠对齐。 |
+| `GET` | `/api/repos/bootstrap-clone-log` | 引导批量克隆日志。JSON：`text`（整段，与任务详情仓库顺序拼接）+ 多仓并行克隆进行中时另含 **`segments`**: `[{ repo_url, text }]`，与 SaaS/任务页按仓折叠对齐。浏览器/`api()` 调用须带 `X-Trace-Id` **且** `X-Parent-Span-Id`（或 `traceparent`）；仅 `X-Trace-Id` 会被 `traceMiddleware` 以 400 拒绝。 |
 | `POST` | `/api/project/view` | JSON：`layer_id`。**仅返回 JSON** `status`/`active_tip_layer_id` 占位，**不保证**更新 `onlineProject` 符号链接。 |
 | `GET` | `/api/project/active` | 返回 `bootstrap_layer_id` 与 `note`（简化实现）。 |
 
@@ -230,7 +230,7 @@ Dockerfile 基于 **ubuntu:24.04**（可通过构建参数 `BASE_IMAGE` / 环境
 | `GET` | `/api/ui/agent-render-hints` | 步骤等字段的呈现声明（表驱动）及 **`rich_text_editor`（富文本编辑器 HTML 白名单 JSON，与净化实现同源）**；页眉按钮「富文本呈现声明」新窗口同源展示。 |
 | `GET` | `/api/events/stream` | SSE：`?access_token=` 必填。 |
 | `POST` | `/api/config` | `multipart/form-data`，字段 `file`，上传 `service_config.yaml`。 |
-| `GET` | `/api/config` | 拉取当前 YAML 到编辑区。 |
+| `GET` | `/api/config` | 拉取当前 YAML 到编辑区；本地缺失时回源 SaaS。 |
 | `POST` | `/api/project/view` | JSON：`{"layer_id":"…"}`；**不保证写 symlink** |
 | `GET` | `/api/requirements/task-gate` | 是否允许新建任务（`clone_done`）。 |
 | `GET` | `/api/layers/empty-root` | 克隆前取空层锚点 `layer_id`。 |

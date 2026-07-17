@@ -35,6 +35,9 @@
 #   - 使用 --cidfile + 后台 docker run + wait + trap：父 shell 能收到 HUP/INT/TERM 并 stop/kill 容器，避免仅 docker 子进程收信号而本脚本不清理。
 #   - 因后台 run 时无法为容器分配 pty，故不传 --tty（保留 -i）；需真正伪终端时可 TRAE_ONLINE_JS_DOCKER=0 在宿主跑 node。
 set -euo pipefail
+# App processes must not inherit shell HTTP(S)_PROXY (dev-only network accel).
+# See .ai/01_project_constraints/23_app_startup_no_env_proxy.md
+unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY all_proxy || true
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"

@@ -54,6 +54,7 @@ import {
   startSaasContainerHeartbeatLoop,
   startSaasLayerGraphPushLoop,
 } from './saasTaskCloud.mjs';
+import { readOrPullServiceConfig } from './ensureServiceConfig.mjs';
 import {
   getExecStreamManifest,
   getExecStreamSegment,
@@ -510,10 +511,27 @@ api.post('/config/raw', (req, res) => {
   res.json({ path: dest, status: 'ok' });
 });
 
-api.get('/config', (req, res) => {
-  const dest = configFilePath();
-  if (!fs.existsSync(dest)) return res.status(404).json({ detail: 'not found' });
-  res.json({ path: dest, yaml: fs.readFileSync(dest, 'utf8') });
+api.get('/config', async (req, res) => {
+  try {
+    const result = await readOrPullServiceConfig({
+      postOpts: {
+        traceId: req.traceId,
+        spanId: req.spanId,
+      },
+    });
+    res.json({ path: result.path, yaml: result.yaml, source: result.source });
+  } catch (e) {
+    const detail = String(e?.message || e || 'not found').trim() || 'not found';
+    appendOutboundReqLog(`GET /api/config: ${detail.slice(0, 400)}`);
+    if (e?.code === 'SAAS_CONFIG_UNAVAILABLE') {
+      return res.status(404).json({ detail: 'not found' });
+    }
+    // SaaS 回源失败：502 保留上游细节；纯缺失仍 404 not found（前端按 traceId 指引展示）
+    if (/not found/i.test(detail) && !/HTTP\s+\d+/i.test(detail)) {
+      return res.status(404).json({ detail: 'not found' });
+    }
+    return res.status(502).json({ detail: detail.slice(0, 500) });
+  }
 });
 
 api.get('/requirements/task-gate', (req, res) => {

@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   PARENT_SPAN_HEADER,
+  isTraceIdOnlyRequest,
   resolveOutboundTraceId,
   resolveTraceId,
   spanIdFromRequest,
@@ -73,4 +74,41 @@ test('startupTraceId reads TRACE_ID env', () => {
     if (prev === undefined) delete process.env.TRACE_ID;
     else process.env.TRACE_ID = prev;
   }
+});
+
+test('isTraceIdOnlyRequest: bare X-Trace-Id is incomplete', () => {
+  assert.equal(
+    isTraceIdOnlyRequest({
+      headers: { 'x-trace-id': '71c09823-3d45-4777-88a9-9f57610805a1' },
+    }),
+    true,
+  );
+});
+
+test('isTraceIdOnlyRequest: X-Trace-Id + X-Parent-Span-Id is complete', () => {
+  assert.equal(
+    isTraceIdOnlyRequest({
+      headers: {
+        'x-trace-id': '71c09823-3d45-4777-88a9-9f57610805a1',
+        'x-parent-span-id': 'b1b2c3d4e5f67890',
+      },
+    }),
+    false,
+  );
+});
+
+test('isTraceIdOnlyRequest: X-Trace-Id + traceparent is complete', () => {
+  assert.equal(
+    isTraceIdOnlyRequest({
+      headers: {
+        'x-trace-id': '71c09823-3d45-4777-88a9-9f57610805a1',
+        traceparent: '00-71c098233d45477788a99f57610805a1-b1b2c3d4e5f67890-01',
+      },
+    }),
+    false,
+  );
+});
+
+test('isTraceIdOnlyRequest: no X-Trace-Id is not incomplete', () => {
+  assert.equal(isTraceIdOnlyRequest({ headers: {} }), false);
 });

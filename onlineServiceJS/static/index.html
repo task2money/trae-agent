@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="trae-service" content="onlineServiceJS" />
   <title>Trae Online Service</title>
   <style>
     :root {
@@ -1245,6 +1246,17 @@
       });
     }
 
+    /** 16-hex span id；与 src/otelTraceId.mjs randomSpanIdHex / X-Parent-Span-Id 校验一致。 */
+    function generateRequestSpanId() {
+      const bytes = new Uint8Array(8);
+      if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+        crypto.getRandomValues(bytes);
+      } else {
+        for (let i = 0; i < 8; i++) bytes[i] = (Math.random() * 256) | 0;
+      }
+      return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+    }
+
     function resolveTraceIdFromResponse(response, requestTraceId, bodyJson) {
       const fromHeader =
         response && response.headers
@@ -1312,7 +1324,10 @@
     }
 
     const api = (path, opts = {}) => {
+      // 须同时带 X-Parent-Span-Id（或 traceparent）：仅 X-Trace-Id 会被服务端 400。
+      // 见 src/traceId.mjs isTraceIdOnlyRequest / src/server.mjs traceMiddleware。
       const traceId = generateRequestTraceId();
+      const spanId = generateRequestSpanId();
       const u = new URL(path, location.origin);
       u.searchParams.set('access_token', ACCESS_TOKEN);
       return fetch(u.toString(), {
@@ -1320,6 +1335,7 @@
         headers: {
           'X-Access-Token': ACCESS_TOKEN,
           'X-Trace-Id': traceId,
+          'X-Parent-Span-Id': spanId,
           ...(opts.headers || {}),
         },
       })
@@ -2477,14 +2493,38 @@
       detail = String(detail || '').trim();
       if (!detail) detail = '请求失败';
       else if (/^not found$/i.test(detail)) {
-        detail = '当前尚无配置文件，请先上传配置';
+        if (prefix === '拉取配置失败') {
+          return '拉取配置失败，请根据traceId 寻找原因';
+        }
+        detail = '请根据traceId 寻找原因';
       }
-      return prefix + '：' + detail;
+      const msg = prefix + '：' + detail;
+      if (prefix === '拉取配置失败' && !/traceId/i.test(msg)) {
+        return msg + '（请根据traceId 寻找原因）';
+      }
+      return msg;
     }
 
-    function setCfgErr(actionLabel, rawText) {
+    function clearCfgErr() {
       const el = document.getElementById('cfgErr');
-      if (el) el.textContent = formatConfigErrMsg(actionLabel, rawText);
+      if (!el) return;
+      el.textContent = '';
+      el.removeAttribute('data-traceId');
+    }
+
+    function setCfgErr(actionLabel, rawText, responseOrTraceId) {
+      const el = document.getElementById('cfgErr');
+      if (!el) return;
+      el.textContent = formatConfigErrMsg(actionLabel, rawText);
+      let traceId = '';
+      if (responseOrTraceId && typeof responseOrTraceId === 'object' && responseOrTraceId.headers) {
+        const parsed = parseApiErrorResponse(responseOrTraceId, String(rawText == null ? '' : rawText));
+        traceId = parsed.traceId || '';
+      } else {
+        traceId = resolveTraceIdFromSource(responseOrTraceId);
+      }
+      if (traceId) el.setAttribute('data-traceId', traceId);
+      else el.removeAttribute('data-traceId');
     }
 
     document.getElementById('btnPushCfg').onclick = debounceClick(() => {
@@ -2492,25 +2532,23 @@
       void runAsyncButton(
         btn,
         async () => {
-          document.getElementById('cfgErr').textContent = '';
+          clearCfgErr();
           const yaml = document.getElementById('cfgYaml').value;
           const fd = new FormData();
           fd.append('file', new Blob([yaml], { type: 'text/yaml' }), 'service_config.yaml');
-          const u = new URL('/api/config', location.origin);
-          u.searchParams.set('access_token', ACCESS_TOKEN);
           try {
-            const r = await fetch(u, {
-              method: 'POST',
-              body: fd,
-              headers: { 'X-Access-Token': ACCESS_TOKEN },
-            });
+            const r = await api('/api/config', { method: 'POST', body: fd });
             if (!r.ok) {
-              setCfgErr('上传配置失败', await r.text());
+              setCfgErr('上传配置失败', await r.text(), r);
               return;
             }
             alert('配置已保存');
           } catch (e) {
-            setCfgErr('上传配置失败', e && e.message ? e.message : String(e));
+            setCfgErr(
+              '上传配置失败',
+              e && e.message ? e.message : String(e),
+              e && e.traceId ? e.traceId : '',
+            );
           }
         },
         { busyText: '上传中…' },
@@ -2522,17 +2560,21 @@
       void runAsyncButton(
         btn,
         async () => {
-          document.getElementById('cfgErr').textContent = '';
+          clearCfgErr();
           try {
             const r = await api('/api/config');
             if (!r.ok) {
-              setCfgErr('拉取配置失败', await r.text());
+              setCfgErr('拉取配置失败', await r.text(), r);
               return;
             }
             const j = await r.json();
             document.getElementById('cfgYaml').value = j.yaml || '';
           } catch (e) {
-            setCfgErr('拉取配置失败', e && e.message ? e.message : String(e));
+            setCfgErr(
+              '拉取配置失败',
+              e && e.message ? e.message : String(e),
+              e && e.traceId ? e.traceId : '',
+            );
           }
         },
         { busyText: '拉取中…' },
