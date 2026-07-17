@@ -104,6 +104,20 @@
       border-radius: 6px;
     }
     .err-msg { color: var(--err); font-size: 0.85rem; margin-top: 0.5rem; }
+    .request-error-banner {
+      display: block;
+      margin: 0 auto 1rem;
+      max-width: 960px;
+      padding: 0.65rem 1rem;
+      border-radius: 8px;
+      border: 1px solid var(--err);
+      background: rgba(248, 113, 113, 0.12);
+      color: var(--err);
+      font-size: 0.875rem;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .request-error-banner[hidden] { display: none; }
     .file-panel { display: flex; gap: 1rem; flex-wrap: wrap; align-items: stretch; }
     .file-panel > div { flex: 1; min-width: 300px; }
     select.file-select { min-height: 280px; font-family: ui-monospace, monospace; font-size: 0.75rem; }
@@ -602,6 +616,7 @@
     <p class="meta" id="hostRepoPushLine" style="margin:0.35rem 0 0">服务宿主仓库（REPO_ROOT）未推送提交：加载中…</p>
   </header>
   <main>
+    <div id="requestErrorBanner" class="request-error-banner" role="alert" hidden></div>
     <section>
       <h2>SSE 实时事件</h2>
       <p class="meta">订阅 <code>/api/events/stream?access_token=…</code></p>
@@ -1217,16 +1232,106 @@
       }
     }
 
+    const apiRequestTraceIds = new WeakMap();
+
+    function generateRequestTraceId() {
+      if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+        return crypto.randomUUID();
+      }
+      return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+        const r = (Math.random() * 16) | 0;
+        const v = c === 'x' ? r : (r & 0x3) | 0x8;
+        return v.toString(16);
+      });
+    }
+
+    function resolveTraceIdFromResponse(response, requestTraceId, bodyJson) {
+      const fromHeader =
+        response && response.headers
+          ? response.headers.get('X-Trace-Id') || response.headers.get('x-trace-id')
+          : '';
+      if (fromHeader && String(fromHeader).trim()) return String(fromHeader).trim();
+      const fromRequest = requestTraceId != null ? String(requestTraceId).trim() : '';
+      if (fromRequest) return fromRequest;
+      if (bodyJson && typeof bodyJson === 'object') {
+        const fromBody = bodyJson.trace_id != null ? bodyJson.trace_id : bodyJson.traceId;
+        if (fromBody != null && String(fromBody).trim()) return String(fromBody).trim();
+      }
+      return '';
+    }
+
+    function resolveTraceIdFromSource(sourceOrTraceId) {
+      if (sourceOrTraceId == null) return '';
+      if (typeof sourceOrTraceId === 'string') return sourceOrTraceId.trim();
+      if (typeof sourceOrTraceId === 'object') {
+        if (sourceOrTraceId.traceId != null && String(sourceOrTraceId.traceId).trim()) {
+          return String(sourceOrTraceId.traceId).trim();
+        }
+        if (sourceOrTraceId.trace_id != null && String(sourceOrTraceId.trace_id).trim()) {
+          return String(sourceOrTraceId.trace_id).trim();
+        }
+      }
+      return '';
+    }
+
+    function getApiRequestTraceId(response) {
+      return apiRequestTraceIds.get(response) || '';
+    }
+
+    function parseApiErrorResponse(r, rawText) {
+      const requestTraceId = getApiRequestTraceId(r);
+      let j = null;
+      try {
+        j = JSON.parse(rawText);
+      } catch (_) {}
+      const traceId = resolveTraceIdFromResponse(r, requestTraceId, j);
+      let msg = rawText;
+      if (j && j.detail !== undefined) {
+        msg = typeof j.detail === 'string' ? j.detail : JSON.stringify(j.detail);
+      }
+      return { msg, traceId, json: j };
+    }
+
+    function showRequestError(message, sourceOrTraceId) {
+      const traceId = resolveTraceIdFromSource(sourceOrTraceId);
+      let banner = document.getElementById('requestErrorBanner');
+      if (!banner) {
+        banner = document.createElement('div');
+        banner.id = 'requestErrorBanner';
+        banner.className = 'request-error-banner';
+        banner.setAttribute('role', 'alert');
+        const main = document.querySelector('main');
+        if (main) main.insertBefore(banner, main.firstChild);
+        else document.body.insertBefore(banner, document.body.firstChild);
+      }
+      banner.textContent = String(message || '请求失败');
+      if (traceId) banner.setAttribute('data-traceId', traceId);
+      else banner.removeAttribute('data-traceId');
+      banner.hidden = false;
+      banner.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+
     const api = (path, opts = {}) => {
+      const traceId = generateRequestTraceId();
       const u = new URL(path, location.origin);
       u.searchParams.set('access_token', ACCESS_TOKEN);
       return fetch(u.toString(), {
         ...opts,
         headers: {
           'X-Access-Token': ACCESS_TOKEN,
+          'X-Trace-Id': traceId,
           ...(opts.headers || {}),
         },
-      });
+      })
+        .then((r) => {
+          apiRequestTraceIds.set(r, traceId);
+          return r;
+        })
+        .catch((e) => {
+          const err = e instanceof Error ? e : new Error(String(e));
+          if (!err.traceId) err.traceId = traceId;
+          throw err;
+        });
     };
 
     /** 带超时的 api：避免拉取 OAuth 等长耗时请求让按钮一直停在「拉取中…」。 */
@@ -2352,6 +2457,36 @@
       };
     }
 
+    /**
+     * 配置推送/拉取失败时写入 #cfgErr 的可读文案。
+     * 逻辑须与 src/formatConfigErrMsg.mjs 保持一致（该模块有单测）。
+     */
+    function formatConfigErrMsg(actionLabel, rawText) {
+      const prefix = String(actionLabel || '操作失败').trim() || '操作失败';
+      let detail = String(rawText == null ? '' : rawText).trim();
+      if (detail) {
+        try {
+          const j = JSON.parse(detail);
+          if (j && j.detail !== undefined) {
+            detail = typeof j.detail === 'string' ? j.detail : JSON.stringify(j.detail);
+          }
+        } catch (_) {
+          /* 非 JSON：保留原文 */
+        }
+      }
+      detail = String(detail || '').trim();
+      if (!detail) detail = '请求失败';
+      else if (/^not found$/i.test(detail)) {
+        detail = '当前尚无配置文件，请先上传配置';
+      }
+      return prefix + '：' + detail;
+    }
+
+    function setCfgErr(actionLabel, rawText) {
+      const el = document.getElementById('cfgErr');
+      if (el) el.textContent = formatConfigErrMsg(actionLabel, rawText);
+    }
+
     document.getElementById('btnPushCfg').onclick = debounceClick(() => {
       const btn = document.getElementById('btnPushCfg');
       void runAsyncButton(
@@ -2363,12 +2498,20 @@
           fd.append('file', new Blob([yaml], { type: 'text/yaml' }), 'service_config.yaml');
           const u = new URL('/api/config', location.origin);
           u.searchParams.set('access_token', ACCESS_TOKEN);
-          const r = await fetch(u, { method: 'POST', body: fd, headers: { 'X-Access-Token': ACCESS_TOKEN } });
-          if (!r.ok) {
-            document.getElementById('cfgErr').textContent = await r.text();
-            return;
+          try {
+            const r = await fetch(u, {
+              method: 'POST',
+              body: fd,
+              headers: { 'X-Access-Token': ACCESS_TOKEN },
+            });
+            if (!r.ok) {
+              setCfgErr('上传配置失败', await r.text());
+              return;
+            }
+            alert('配置已保存');
+          } catch (e) {
+            setCfgErr('上传配置失败', e && e.message ? e.message : String(e));
           }
-          alert('配置已保存');
         },
         { busyText: '上传中…' },
       );
@@ -2380,13 +2523,17 @@
         btn,
         async () => {
           document.getElementById('cfgErr').textContent = '';
-          const r = await api('/api/config');
-          if (!r.ok) {
-            document.getElementById('cfgErr').textContent = await r.text();
-            return;
+          try {
+            const r = await api('/api/config');
+            if (!r.ok) {
+              setCfgErr('拉取配置失败', await r.text());
+              return;
+            }
+            const j = await r.json();
+            document.getElementById('cfgYaml').value = j.yaml || '';
+          } catch (e) {
+            setCfgErr('拉取配置失败', e && e.message ? e.message : String(e));
           }
-          const j = await r.json();
-          document.getElementById('cfgYaml').value = j.yaml || '';
         },
         { busyText: '拉取中…' },
       );
@@ -2655,12 +2802,8 @@
               });
               if (!r.ok) {
                 const t = await r.text();
-                let msg = t;
-                try {
-                  const j = JSON.parse(t);
-                  if (j && j.detail) msg = typeof j.detail === 'string' ? j.detail : JSON.stringify(j.detail);
-                } catch (_) {}
-                alert('重新执行失败：' + msg);
+                const { msg, traceId } = parseApiErrorResponse(r, t);
+                showRequestError('重新执行失败：' + msg, traceId);
                 return;
               }
               await loadJobs();
@@ -2680,12 +2823,8 @@
               });
               if (!r.ok) {
                 const t = await r.text();
-                let msg = t;
-                try {
-                  const j = JSON.parse(t);
-                  if (j && j.detail) msg = typeof j.detail === 'string' ? j.detail : JSON.stringify(j.detail);
-                } catch (_) {}
-                alert('继续执行失败：' + msg);
+                const { msg, traceId } = parseApiErrorResponse(r, t);
+                showRequestError('继续执行失败：' + msg, traceId);
                 return;
               }
               await loadJobs();
@@ -2706,12 +2845,8 @@
               const r = await api('/api/jobs/' + encodeURIComponent(id), { method: 'DELETE' });
               if (!r.ok) {
                 const t = await r.text();
-                let msg = t;
-                try {
-                  const j = JSON.parse(t);
-                  if (j && j.detail) msg = typeof j.detail === 'string' ? j.detail : JSON.stringify(j.detail);
-                } catch (_) {}
-                alert('删除失败：' + msg);
+                const { msg, traceId } = parseApiErrorResponse(r, t);
+                showRequestError('删除失败：' + msg, traceId);
                 return;
               }
               await loadJobs();
@@ -3706,13 +3841,8 @@
               j = JSON.parse(raw);
             } catch (_) {}
             if (!r.ok) {
-              const msg =
-                j && j.detail !== undefined
-                  ? typeof j.detail === 'string'
-                    ? j.detail
-                    : JSON.stringify(j.detail)
-                  : raw;
-              alert('删除失败：' + msg);
+              const { msg, traceId } = parseApiErrorResponse(r, raw);
+              showRequestError('删除失败：' + msg, traceId);
               return;
             }
             await loadJobs();
@@ -3828,13 +3958,10 @@
                 j = JSON.parse(raw);
               } catch (_) {}
               if (!r.ok) {
-                alert(
-                  '加入队列失败：' +
-                    (j && j.detail
-                      ? typeof j.detail === 'string'
-                        ? j.detail
-                        : JSON.stringify(j.detail)
-                      : raw),
+                const { msg, traceId } = parseApiErrorResponse(r, raw);
+                showRequestError(
+                  '加入队列失败：' + msg,
+                  traceId,
                 );
                 return;
               }
@@ -3911,13 +4038,10 @@
                 j = JSON.parse(raw);
               } catch (_) {}
               if (!r.ok) {
-                alert(
-                  '创建失败：' +
-                    (j && j.detail
-                      ? typeof j.detail === 'string'
-                        ? j.detail
-                        : JSON.stringify(j.detail)
-                      : raw),
+                const { msg, traceId } = parseApiErrorResponse(r, raw);
+                showRequestError(
+                  '创建失败：' + msg,
+                  traceId,
                 );
                 return;
               }
@@ -3977,13 +4101,10 @@
               j = JSON.parse(rawText);
             } catch (_) {}
             if (!r.ok) {
-              let msg = rawText;
-              if (j && j.detail !== undefined) {
-                msg = typeof j.detail === 'string' ? j.detail : JSON.stringify(j.detail);
-              }
+              const { msg, traceId } = parseApiErrorResponse(r, rawText);
               setLayerCommitExecLog(layer.layer_id, '提交失败\n' + msg);
               touchLayerCommitLogPanel(layer.layer_id);
-              alert('提交失败：' + msg);
+              showRequestError('提交失败：' + msg, traceId);
               return;
             }
             if (j && j.status === 'noop') {
@@ -4045,11 +4166,8 @@
               j = JSON.parse(rawText);
             } catch (_) {}
             if (!r.ok) {
-              let msg = rawText;
-              if (j && j.detail !== undefined) {
-                msg = typeof j.detail === 'string' ? j.detail : JSON.stringify(j.detail);
-              }
-              alert('拉取 AccessToken 并推送失败：' + msg);
+              const { msg, traceId } = parseApiErrorResponse(r, rawText);
+              showRequestError('拉取 AccessToken 并推送失败：' + msg, traceId);
               return;
             }
             if (j && j.ok) {
@@ -4099,10 +4217,16 @@
               } catch (e) {
                 const errName = String(e && e.name ? e.name : '');
                 if (errName === 'AbortError') {
-                  dialogMsg = '拉取AccessToken失败：请求超时（130s），请检查 task2app/gitOauth 是否可达后重试';
+                  showRequestError(
+                    '拉取AccessToken失败：请求超时（130s），请检查 task2app/gitOauth 是否可达后重试',
+                    e,
+                  );
                   return;
                 }
-                dialogMsg = '拉取AccessToken失败：' + String(e && e.message ? e.message : e);
+                showRequestError(
+                  '拉取AccessToken失败：' + String(e && e.message ? e.message : e),
+                  e,
+                );
                 return;
               }
               const rawText = await r.text();
@@ -4111,11 +4235,8 @@
                 j = JSON.parse(rawText);
               } catch (_) {}
               if (!r.ok) {
-                let msg = rawText;
-                if (j && j.detail !== undefined) {
-                  msg = typeof j.detail === 'string' ? j.detail : JSON.stringify(j.detail);
-                }
-                dialogMsg = '拉取AccessToken失败：' + msg;
+                const { msg, traceId } = parseApiErrorResponse(r, rawText);
+                showRequestError('拉取AccessToken失败：' + msg, traceId);
                 return;
               }
               if (j && j.ok) {
@@ -4183,11 +4304,8 @@
                 j = JSON.parse(rawText);
               } catch (_) {}
               if (!r.ok) {
-                let msg = rawText;
-                if (j && j.detail !== undefined) {
-                  msg = typeof j.detail === 'string' ? j.detail : JSON.stringify(j.detail);
-                }
-                alert('推送失败：' + msg);
+                const { msg, traceId } = parseApiErrorResponse(r, rawText);
+                showRequestError('推送失败：' + msg, traceId);
                 return;
               }
               if (j && j.status === 'ok') {
