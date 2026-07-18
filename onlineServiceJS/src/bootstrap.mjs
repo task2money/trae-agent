@@ -91,7 +91,7 @@ function rebuildBootstrapParallelLogText() {
  */
 export function formatBootstrapCloneFailureFooter(failedJobs) {
   const list = Array.isArray(failedJobs) ? failedJobs : [];
-  const lines = ['', '【项目克隆】已结束（存在失败）。'];
+  const lines = ['', '【项目克隆】已结束（存在失败，引导继续）。'];
   if (list.length) {
     lines.push(`失败仓库（${list.length}）：`);
     for (const j of list) {
@@ -106,6 +106,34 @@ export function formatBootstrapCloneFailureFooter(failedJobs) {
   }
   lines.push('');
   return lines.join('\n');
+}
+
+/**
+ * 单仓/多仓克隆失败不阻断引导后续（feature-params / BOOTSTRAP_COMPLETE / 业务端点就绪）。
+ * 失败仓可在任务详情「重新克隆」；其余已成功仓照常可用。
+ * @param {{ failedCount: number, totalCount: number, failedNames?: string }} opts
+ * @returns {{ abort: boolean, progressMessage: string, level: 'ok' | 'partial' }}
+ */
+export function resolveBootstrapCloneFailurePolicy(opts) {
+  const failedCount = Math.max(0, Number(opts?.failedCount) || 0);
+  const totalCount = Math.max(0, Number(opts?.totalCount) || 0);
+  if (failedCount <= 0) {
+    return {
+      abort: false,
+      progressMessage: '【项目克隆】仓库克隆已完成',
+      level: 'ok',
+    };
+  }
+  const names = String(opts?.failedNames || '').trim() || `${failedCount} 个`;
+  return {
+    abort: false,
+    progressMessage:
+      `【项目克隆】部分失败：失败 ${failedCount}/${totalCount || failedCount} 个仓库：${names}（其余已就绪，引导继续）`.slice(
+        0,
+        2000,
+      ),
+    level: 'partial',
+  };
 }
 
 /**
@@ -819,33 +847,45 @@ async function cloneReposIntoSharedLayer(urlsOrJobs, credRoot, cloudPrefix, acce
     finalizeCloneLayerLog(layerId);
     bootstrapRepoLogState = null;
 
-    if (errors.length) {
-      const head = errors[0];
-      const nameList = failedJobs.map((j) => path.basename(j.repoDir)).join('、');
-      const summary =
-        `【项目克隆】未完成：失败 ${failedJobs.length}/${n} 个仓库：${nameList}`.slice(0, 2000);
-      await postCloneProgress(cloudPrefix, accessToken, 0, summary, null, {
-        kind: 'global',
-        phase: 'bootstrap',
-      });
-      throw head;
-    }
-    await postCloneProgress(cloudPrefix, accessToken, 100, '【项目克隆】仓库克隆已完成', null, {
-      kind: 'global',
-      phase: 'bootstrap',
+    const nameList = failedJobs.map((j) => path.basename(j.finalDir || j.repoDir)).join('、');
+    const clonePolicy = resolveBootstrapCloneFailurePolicy({
+      failedCount: failedJobs.length,
+      totalCount: n,
+      failedNames: nameList,
     });
+    await postCloneProgress(
+      cloudPrefix,
+      accessToken,
+      clonePolicy.level === 'ok' ? 100 : 0,
+      clonePolicy.progressMessage,
+      null,
+      { kind: 'global', phase: 'bootstrap' },
+    );
+    if (clonePolicy.level === 'partial') {
+      console.warn(
+        `[onlineServiceJS] BOOTSTRAP_PHASE=clone_partial_failure failed=${failedJobs.length}/${n} continuing bootstrap (feature-params / BOOTSTRAP_COMPLETE)`,
+      );
+    }
+    // 单仓失败不 abort：保持 HTTP 服务与业务端点就绪；失败仓可 reclone。
 
     const plans = branchPlans && typeof branchPlans === 'object' ? branchPlans : collectRepoBranchPlans({});
     const sharedWork = String(plans.sharedWorkBranch || '').trim();
     const byUrl = plans.byUrl instanceof Map ? plans.byUrl : new Map();
-    if (sharedWork || byUrl.size) {
+    const checkoutJobs = jobs.filter((j) => {
+      try {
+        return Boolean(j?.repoDir && fs.existsSync(path.join(j.repoDir, '.git')));
+      } catch {
+        return false;
+      }
+    });
+    if ((sharedWork || byUrl.size) && checkoutJobs.length) {
       console.log(
-        `[onlineServiceJS] BOOTSTRAP_PHASE=work_branch_checkout 开始将 ${jobs.length} 个仓库切换到工作分支（shared=${sharedWork || '(per-repo)'}）…`,
+        `[onlineServiceJS] BOOTSTRAP_PHASE=work_branch_checkout 开始将 ${checkoutJobs.length} 个仓库切换到工作分支（shared=${sharedWork || '(per-repo)'}）…`,
       );
       const checkoutLogLines = [];
       const checkout = await checkoutWorkBranchesForJobs({
         gitExec: bootstrapGitExec,
-        jobs,
+        jobs: checkoutJobs,
         plansByUrl: byUrl,
         sharedWorkBranch: sharedWork,
         appendLog: (line) => {
@@ -862,14 +902,17 @@ async function cloneReposIntoSharedLayer(urlsOrJobs, credRoot, cloudPrefix, acce
         }
       }
       if (!checkout.ok) {
-        const head = checkout.errors[0] || new Error('work branch checkout failed');
-        console.error(
-          `[onlineServiceJS] BOOTSTRAP_FAILED phase=work_branch_checkout ${String(head?.message || head).slice(0, 500)}`,
+        console.warn(
+          `[onlineServiceJS] BOOTSTRAP_PHASE=work_branch_checkout_partial failed=${checkout.errors.length}/${checkoutJobs.length} continuing bootstrap`,
         );
-        throw head;
+      } else {
+        console.log(
+          `[onlineServiceJS] BOOTSTRAP_PHASE=work_branch_checkout_done 工作分支切换完成（ok=${checkout.results.filter((r) => r.ok && !r.skipped).length}/${checkoutJobs.length}）`,
+        );
       }
+    } else if (sharedWork || byUrl.size) {
       console.log(
-        `[onlineServiceJS] BOOTSTRAP_PHASE=work_branch_checkout_done 工作分支切换完成（ok=${checkout.results.filter((r) => r.ok && !r.skipped).length}/${jobs.length}）`,
+        '[onlineServiceJS] BOOTSTRAP_PHASE=work_branch_checkout_skip 无已成功克隆的仓库可切换工作分支',
       );
     } else {
       console.log(
