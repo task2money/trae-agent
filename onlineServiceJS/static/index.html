@@ -964,17 +964,26 @@
 
     /** 原始控制台 / 克隆输出 iframe：仅在用户原本贴在底部时追加内容后才自动滚到底，避免打断向上翻阅 */
     const IFRAME_LOG_STICK_BOTTOM_PX = 48;
+    const CLONE_BANNER_STICK_BOTTOM_PX = 24;
 
     function iframeLogScrollingEl(doc) {
       if (!doc) return null;
       return doc.scrollingElement || doc.documentElement || doc.body;
     }
 
+    function scrollElHasOverflow(el) {
+      return !!(el && el.scrollHeight > el.clientHeight + 4);
+    }
+
+    function scrollElNearBottom(el, px) {
+      if (!el) return true;
+      if (!scrollElHasOverflow(el)) return true;
+      return el.scrollHeight - el.clientHeight - el.scrollTop < px;
+    }
+
     function iframeLogNearBottom(doc) {
       try {
-        const el = iframeLogScrollingEl(doc);
-        if (!el) return true;
-        return el.scrollHeight - el.clientHeight - el.scrollTop < IFRAME_LOG_STICK_BOTTOM_PX;
+        return scrollElNearBottom(iframeLogScrollingEl(doc), IFRAME_LOG_STICK_BOTTOM_PX);
       } catch (_) {
         return true;
       }
@@ -987,16 +996,36 @@
       } catch (_) {}
     }
 
-    function setExecRichIframeSrcdocSticky(fr, srcdocHtml) {
-      let stickToBottom = true;
-      let savedScrollTop = 0;
+    function extractSrcdocBodyHtml(srcdocHtml) {
+      const m = String(srcdocHtml || '').match(/<body[^>]*>([\s\S]*)<\/body>/i);
+      return m ? m[1] : null;
+    }
+
+    function rememberIframeLogScroll(fr, doc) {
       try {
-        const doc = fr.contentDocument;
         const el = iframeLogScrollingEl(doc);
-        stickToBottom = iframeLogNearBottom(doc);
-        if (!stickToBottom && el) savedScrollTop = el.scrollTop;
+        if (!el || !scrollElHasOverflow(el)) return;
+        fr.__logStickBottom = scrollElNearBottom(el, IFRAME_LOG_STICK_BOTTOM_PX);
+        fr.__logScrollTop = el.scrollTop;
       } catch (_) {}
-      fr.srcdoc = srcdocHtml;
+    }
+
+    function bindIframeLogScrollMemory(fr) {
+      try {
+        const win = fr.contentWindow;
+        if (!win || fr.__logScrollBoundWin === win) return;
+        fr.__logScrollBoundWin = win;
+        win.addEventListener(
+          'scroll',
+          () => {
+            rememberIframeLogScroll(fr, fr.contentDocument);
+          },
+          { passive: true },
+        );
+      } catch (_) {}
+    }
+
+    function applyIframeLogScroll(fr, stickToBottom, savedScrollTop) {
       try {
         const doc = fr.contentDocument;
         const el = iframeLogScrollingEl(doc);
@@ -1006,7 +1035,68 @@
         } else {
           el.scrollTop = savedScrollTop;
         }
+        bindIframeLogScrollMemory(fr);
+        rememberIframeLogScroll(fr, doc);
       } catch (_) {}
+    }
+
+    /**
+     * 刷新富文本日志 iframe：优先就地改 body（保留滚动元素），否则 srcdoc + load/rAF 恢复。
+     * 粘底意图挂在 iframe 元素上，避免短暂空文档误判为「贴底」而强制滚回底部。
+     */
+    function setExecRichIframeSrcdocSticky(fr, srcdocHtml) {
+      if (!fr) return;
+      // 作废未完成的 srcdoc load/rAF 恢复，避免晚到的「贴底」覆盖用户已上翻的位置
+      const gen = (fr.__logSrcdocGen = (fr.__logSrcdocGen || 0) + 1);
+      let stickToBottom = fr.__logStickBottom !== false;
+      let savedScrollTop = typeof fr.__logScrollTop === 'number' ? fr.__logScrollTop : 0;
+      try {
+        const doc = fr.contentDocument;
+        const el = iframeLogScrollingEl(doc);
+        if (el && scrollElHasOverflow(el)) {
+          stickToBottom = scrollElNearBottom(el, IFRAME_LOG_STICK_BOTTOM_PX);
+          savedScrollTop = el.scrollTop;
+          fr.__logStickBottom = stickToBottom;
+          fr.__logScrollTop = savedScrollTop;
+        }
+        const bodyHtml = extractSrcdocBodyHtml(srcdocHtml);
+        const alreadyStyled = !!(doc && doc.head && doc.head.querySelector('style'));
+        if (doc && doc.body && bodyHtml != null && alreadyStyled) {
+          doc.body.innerHTML = bodyHtml;
+          applyIframeLogScroll(fr, stickToBottom, savedScrollTop);
+          return;
+        }
+      } catch (_) {}
+
+      const restore = () => {
+        if (fr.__logSrcdocGen !== gen) return;
+        applyIframeLogScroll(fr, stickToBottom, savedScrollTop);
+      };
+      fr.addEventListener('load', restore, { once: true });
+      fr.srcdoc = srcdocHtml;
+      try {
+        restore();
+      } catch (_) {}
+      requestAnimationFrame(() => {
+        requestAnimationFrame(restore);
+      });
+    }
+
+    /** 更新克隆状态横幅：重写 textContent 时保留用户滚动位置（贴底则仍跟随） */
+    function setCloneOutBannerText(nextText, opts) {
+      const ban = document.getElementById('cloneOutBanner');
+      if (!ban) return;
+      const append = !!(opts && opts.append);
+      const incoming = nextText == null ? '' : String(nextText);
+      const next = append
+        ? (ban.textContent ? ban.textContent + '\n' : '') + incoming
+        : incoming;
+      if (ban.textContent === next) return;
+      const nearBottom = scrollElNearBottom(ban, CLONE_BANNER_STICK_BOTTOM_PX);
+      const saved = ban.scrollTop;
+      ban.textContent = next;
+      if (nearBottom) ban.scrollTop = ban.scrollHeight;
+      else ban.scrollTop = saved;
     }
 
     /** Secure Context 外（HTTP 远程 IP）Clipboard API 不可用；textarea + execCommand 回退。 */
@@ -1037,6 +1127,7 @@
       window.__onlineServiceUiTest = {
         setExecRichIframeSrcdocSticky,
         iframeLogNearBottom,
+        setCloneOutBannerText,
         copyTextToClipboard,
       };
     } catch (_) {}
@@ -1056,10 +1147,13 @@
     }
 
     function clearCloneHostVisual() {
-      const ban = document.getElementById('cloneOutBanner');
-      if (ban) ban.textContent = '';
+      setCloneOutBannerText('');
       const fr = document.getElementById('cloneOutFrame');
-      if (fr) fr.srcdoc = buildExecRichSrcdoc([]);
+      if (fr) {
+        fr.__logStickBottom = true;
+        fr.__logScrollTop = 0;
+        fr.srcdoc = buildExecRichSrcdoc([]);
+      }
     }
 
     function setCloneFrameFromPlainLog(text) {
@@ -2292,10 +2386,13 @@
         }
         if (o.type === 'repo_clone_started') {
           resetExecStreamCloneUi(o.layer_id);
-          const ban = document.getElementById('cloneOutBanner');
-          if (ban) ban.textContent = (o.title || '开始克隆') + '\n\n';
+          setCloneOutBannerText((o.title || '开始克隆') + '\n\n');
           const fr = document.getElementById('cloneOutFrame');
-          if (fr) setExecRichIframeSrcdocSticky(fr, buildExecRichSrcdoc([]));
+          if (fr) {
+            fr.__logStickBottom = true;
+            fr.__logScrollTop = 0;
+            setExecRichIframeSrcdocSticky(fr, buildExecRichSrcdoc([]));
+          }
           ensureCloneLogPoll(o.layer_id);
           void syncCloneStreamFromManifest('sse-started');
           if (o.title) sseAppend('repo_clone_started · ' + o.title);
@@ -2354,11 +2451,10 @@
         }
         if (o.type === 'repo_clone_retry') {
           ensureCloneLogPoll(o.layer_id);
-          const ban = document.getElementById('cloneOutBanner');
-          if (ban && o.title) {
-            ban.textContent += (ban.textContent ? '\n' : '') + '━━ ' + o.title + ' ━━';
+          if (o.title) {
+            setCloneOutBannerText('━━ ' + o.title + ' ━━', { append: true });
+            sseAppend('repo_clone_retry · ' + o.title);
           }
-          if (o.title) sseAppend('repo_clone_retry · ' + o.title);
           return;
         }
         if (o.type === 'repo_clone_finished') {
@@ -2664,13 +2760,11 @@
             currentStreamingLayerId = j.layer_id;
             ensureCloneLogPoll(j.layer_id);
             const qp = j.queue_position != null ? Number(j.queue_position) + 1 : '';
-            const ban = document.getElementById('cloneOutBanner');
-            if (ban) {
-              ban.textContent =
-                '已加入克隆队列' +
+            setCloneOutBannerText(
+              '已加入克隆队列' +
                 (qp !== '' && !isNaN(qp) ? '（第 ' + qp + ' 项）' : '') +
-                '；git 输出见下方，亦可看右侧 SSE 日志。\n';
-            }
+                '；git 输出见下方，亦可看右侧 SSE 日志。\n',
+            );
             snapshotClonePersist('running', {
               layer_id: j.layer_id,
               layer_path: j.layer_path || '',
