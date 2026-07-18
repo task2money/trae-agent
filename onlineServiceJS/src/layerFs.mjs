@@ -759,11 +759,63 @@ export function sanitizeCloneDirName(raw) {
   return s.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^[-._]+|[-._]+$/g, '') || '';
 }
 
-/** 优先使用用户别名，否则从 URL 推导。 */
+/**
+ * 相对路径别名（允许 `/`）：按段 sanitize，拒绝 `..` / 绝对路径。
+ * 用于 nested 子仓在父仓工作树内的落点（如 `task2app`、`libs/foo`）。
+ */
+export function sanitizeCloneRelPath(raw) {
+  const s = String(raw || '')
+    .trim()
+    .replace(/\\/g, '/');
+  if (!s || s.startsWith('/')) return '';
+  const parts = s.split('/').filter((p) => p && p !== '.');
+  if (!parts.length) return '';
+  const out = [];
+  for (const p of parts) {
+    if (p === '..') return '';
+    const seg = sanitizeCloneDirName(p);
+    if (!seg) return '';
+    out.push(seg);
+  }
+  return out.join('/');
+}
+
+/** 优先使用用户别名，否则从 URL 推导（单段目录名；`/` 仍压成 `-`，兼容顶层别名）。 */
 export function resolveRepoCloneDirName(url, cloneAlias) {
   const fromAlias = sanitizeCloneDirName(cloneAlias);
   if (fromAlias) return fromAlias;
   return repoDirNameFromUrl(url);
+}
+
+/**
+ * 层内相对落点路径：优先保留别名中的 `/` 分段；否则回退 {@link resolveRepoCloneDirName}。
+ */
+export function resolveRepoCloneRelPath(url, cloneAlias) {
+  const rel = sanitizeCloneRelPath(cloneAlias);
+  if (rel) return rel;
+  return resolveRepoCloneDirName(url, cloneAlias);
+}
+
+/**
+ * 将已完成的 clone 目录移到最终位置（覆盖空占位或旧目录）。
+ * 同卷优先 rename；跨卷失败时 copy+rm。
+ */
+export function relocateClonedRepo(stagingDir, finalDir) {
+  const from = path.resolve(String(stagingDir || ''));
+  const to = path.resolve(String(finalDir || ''));
+  if (!from || !to) throw new Error('relocateClonedRepo: empty path');
+  if (from === to) return;
+  if (!fs.existsSync(from)) throw new Error(`relocateClonedRepo: staging missing: ${from}`);
+  fs.mkdirSync(path.dirname(to), { recursive: true });
+  if (fs.existsSync(to)) {
+    fs.rmSync(to, { recursive: true, force: true });
+  }
+  try {
+    fs.renameSync(from, to);
+  } catch {
+    fs.cpSync(from, to, { recursive: true });
+    fs.rmSync(from, { recursive: true, force: true });
+  }
 }
 
 export function repoDirNameFromUrl(url) {

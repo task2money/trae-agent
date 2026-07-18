@@ -59,8 +59,8 @@ describe('collectRepoCloneJobs', () => {
       ],
     });
     assert.deepEqual(jobs, [
-      { url: 'https://github.com/o/a.git', cloneAlias: 'custom-a' },
-      { url: 'https://github.com/o/b.git', cloneAlias: '' },
+      { url: 'https://github.com/o/a.git', cloneAlias: 'custom-a', parentRepoUrl: '' },
+      { url: 'https://github.com/o/b.git', cloneAlias: '', parentRepoUrl: '' },
     ]);
   });
 
@@ -68,6 +68,8 @@ describe('collectRepoCloneJobs', () => {
     const jobs = collectRepoCloneJobs({
       project_repos: [{ git_repos: ['https://github.com/o/plain.git'] }],
     });
-    assert.deepEqual(jobs, [{ url: 'https://github.com/o/plain.git', cloneAlias: '' }]);
+    assert.deepEqual(jobs, [
+      { url: 'https://github.com/o/plain.git', cloneAlias: '', parentRepoUrl: '' },
+    ]);
   });
 });
