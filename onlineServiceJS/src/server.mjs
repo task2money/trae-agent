@@ -73,6 +73,9 @@ import {
   resolveAbsolutePathForLayerListedFile,
   deleteLayerTree,
   resolveRepoCloneDirName,
+  resolveRepoCloneRelPath,
+  sanitizeCloneRelPath,
+  relocateClonedRepo,
   writeLayerMeta,
   readLayerMeta,
   resolvedParentLayerId,
@@ -853,16 +856,39 @@ api.post('/repos/reclone', async (req, res) => {
   }
   if (!layerId) return res.status(400).json({ detail: '引导克隆层不存在' });
   const bodyAlias = String(req.body?.clone_alias || req.body?.cloneAlias || '').trim();
+  let bodyParent = String(req.body?.parent_repo_url || req.body?.parentRepoUrl || '').trim();
   let resolvedAlias = bodyAlias;
-  if (!resolvedAlias && lastBootstrapTaskDetail) {
+  if (lastBootstrapTaskDetail) {
     const jobs = collectRepoCloneJobs(lastBootstrapTaskDetail);
     const hit = jobs.find((j) => String(j.url || '').trim() === repoUrl);
-    if (hit?.cloneAlias) resolvedAlias = hit.cloneAlias;
+    if (!resolvedAlias && hit?.cloneAlias) resolvedAlias = hit.cloneAlias;
+    if (!bodyParent && hit?.parentRepoUrl) bodyParent = hit.parentRepoUrl;
   }
-  const name = resolveRepoCloneDirName(repoUrl, resolvedAlias);
-  let target = path.join(layerPath(layerId), name);
-  if (fs.existsSync(target)) fs.rmSync(target, { recursive: true, force: true });
-  fs.mkdirSync(target, { recursive: true });
+  const layerDir = layerPath(layerId);
+  let parentTop = '';
+  if (bodyParent) {
+    const parentJobs = lastBootstrapTaskDetail ? collectRepoCloneJobs(lastBootstrapTaskDetail) : [];
+    const parentHit = parentJobs.find(
+      (j) =>
+        !j.parentRepoUrl &&
+        String(j.url || '').trim().replace(/\/+$/, '').replace(/\.git$/i, '').toLowerCase() ===
+          bodyParent.replace(/\/+$/, '').replace(/\.git$/i, '').toLowerCase(),
+    );
+    const parentName = parentHit
+      ? resolveRepoCloneDirName(parentHit.url, parentHit.cloneAlias)
+      : resolveRepoCloneDirName(bodyParent, '');
+    const candidate = path.join(layerDir, parentName);
+    if (fs.existsSync(candidate)) parentTop = parentName;
+  }
+  const rel =
+    sanitizeCloneRelPath(resolvedAlias) ||
+    resolveRepoCloneRelPath(repoUrl, resolvedAlias) ||
+    resolveRepoCloneDirName(repoUrl, resolvedAlias);
+  const name = parentTop ? path.join(parentTop, rel) : rel;
+  const target = path.join(layerDir, ...String(name).split(/[/\\]/).filter(Boolean));
+  const stagingDir = path.join(layerDir, '.bootstrap-staging', `reclone-${Date.now()}`);
+  if (fs.existsSync(stagingDir)) fs.rmSync(stagingDir, { recursive: true, force: true });
+  fs.mkdirSync(stagingDir, { recursive: true });
   let prefix = null;
   try {
     prefix = taskApiPrefix();
@@ -928,7 +954,7 @@ api.post('/repos/reclone', async (req, res) => {
           let lastPosted = 0;
           let lastPct = -1;
           try {
-            await runGitCloneWithProgress(gitArgs, env, target, (chunk, errAll) => {
+            await runGitCloneWithProgress(gitArgs, env, stagingDir, (chunk, errAll) => {
               if (chunk) {
                 try {
                   appendCloneLayerLog(layerId, normalizeGitProgressChunkForLog(chunk));
@@ -974,8 +1000,8 @@ api.post('/repos/reclone', async (req, res) => {
               );
             }
             try {
-              fs.rmSync(target, { recursive: true, force: true });
-              fs.mkdirSync(target, { recursive: true });
+              fs.rmSync(stagingDir, { recursive: true, force: true });
+              fs.mkdirSync(stagingDir, { recursive: true });
             } catch {
               /* ignore */
             }
@@ -983,6 +1009,7 @@ api.post('/repos/reclone', async (req, res) => {
             attempt += 1;
           }
         }
+        relocateClonedRepo(stagingDir, target);
         try {
           const metaPath = path.join(layerPath(layerId), 'layer_meta.json');
           const existingMeta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));

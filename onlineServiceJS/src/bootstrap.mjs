@@ -15,6 +15,9 @@ import {
   writeLayerMeta,
   LAYER_ID_RE,
   resolveRepoCloneDirName,
+  resolveRepoCloneRelPath,
+  sanitizeCloneRelPath,
+  relocateClonedRepo,
 } from './layerFs.mjs';
 import { configFilePath, layersRoot, logsDir, runtimeDir } from './paths.mjs';
 import {
@@ -184,18 +187,22 @@ function skipContainerTokenExchangeByEnv() {
 }
 
 /**
- * 从 task-detail 收集待克隆仓库（URL + 可选 clone_alias）。
+ * 从 task-detail 收集待克隆仓库（URL + 可选 clone_alias / parent_repo_url）。
  * 优先 `git_repo_entries`；否则回退 `git_repos` 字符串列表。
- * @returns {{ url: string, cloneAlias: string }[]}
+ * @returns {{ url: string, cloneAlias: string, parentRepoUrl: string }[]}
  */
 export function collectRepoCloneJobs(taskDetail) {
   const out = [];
   const seen = new Set();
-  function add(rawUrl, rawAlias) {
+  function add(rawUrl, rawAlias, rawParent) {
     const u = String(rawUrl || '').trim();
     if (!u || seen.has(u)) return;
     seen.add(u);
-    out.push({ url: u, cloneAlias: String(rawAlias || '').trim() });
+    out.push({
+      url: u,
+      cloneAlias: String(rawAlias || '').trim(),
+      parentRepoUrl: String(rawParent || '').trim(),
+    });
   }
   function walkEntries(entries) {
     if (!Array.isArray(entries)) return false;
@@ -204,14 +211,18 @@ export function collectRepoCloneJobs(taskDetail) {
       if (!e || typeof e !== 'object') continue;
       const url = e.url || e.repo_url || e.git_repo;
       if (!url) continue;
-      add(url, e.clone_alias || e.alias || '');
+      add(
+        url,
+        e.clone_alias || e.alias || '',
+        e.parent_repo_url || e.parentRepoUrl || '',
+      );
       any = true;
     }
     return any;
   }
   function walk(value) {
     if (typeof value === 'string') {
-      add(value, '');
+      add(value, '', '');
       return;
     }
     if (Array.isArray(value)) {
@@ -222,7 +233,11 @@ export function collectRepoCloneJobs(taskDetail) {
       if (walkEntries(value.git_repo_entries)) {
         return;
       }
-      add(value.git_repo || value.url || value.repo_url, value.clone_alias || value.alias || '');
+      add(
+        value.git_repo || value.url || value.repo_url,
+        value.clone_alias || value.alias || '',
+        value.parent_repo_url || value.parentRepoUrl || '',
+      );
       if (value.git_repos != null) walk(value.git_repos);
     }
   }
@@ -570,19 +585,90 @@ async function bootstrapGitExec(args, cwd, env = {}) {
 }
 
 /**
- * @param {string[] | { url: string, cloneAlias?: string }[]} urlsOrJobs
+ * 规划 bootstrap 克隆落点：顶层仓直接 final；nested 先 staging，完成后移入父仓 path。
+ * @param {string} layerDir
+ * @param {{ url: string, cloneAlias?: string, parentRepoUrl?: string }[]} jobsIn
+ */
+export function planBootstrapCloneJobs(layerDir, jobsIn) {
+  const stagingRoot = path.join(layerDir, '.bootstrap-staging');
+  /** @type {{ raw: string, repoDir: string, finalDir: string, needsRelocate: boolean, parentRepoUrl: string, index: number, requireParentDir: boolean }[]} */
+  const jobs = [];
+  const reservedTopNames = new Set();
+  /** @type {Map<string, string>} */
+  const parentTopDirByKey = new Map();
+
+  for (let i = 0; i < jobsIn.length; i++) {
+    const raw = String(jobsIn[i]?.url || '').trim();
+    const cloneAlias = String(jobsIn[i]?.cloneAlias || jobsIn[i]?.clone_alias || '').trim();
+    const parentRepoUrl = String(jobsIn[i]?.parentRepoUrl || jobsIn[i]?.parent_repo_url || '').trim();
+    if (!raw || parentRepoUrl) continue;
+    let name = resolveRepoCloneDirName(raw, cloneAlias);
+    let suf = 2;
+    let repoDir = path.join(layerDir, name);
+    while (fs.existsSync(repoDir) || reservedTopNames.has(path.basename(repoDir))) {
+      repoDir = path.join(layerDir, `${name}_${suf}`);
+      suf += 1;
+    }
+    reservedTopNames.add(path.basename(repoDir));
+    parentTopDirByKey.set(canonicalRepoUrlKey(raw), path.basename(repoDir));
+    jobs.push({
+      raw,
+      repoDir,
+      finalDir: repoDir,
+      needsRelocate: false,
+      parentRepoUrl: '',
+      index: i,
+      requireParentDir: false,
+    });
+  }
+
+  for (let i = 0; i < jobsIn.length; i++) {
+    const raw = String(jobsIn[i]?.url || '').trim();
+    const cloneAlias = String(jobsIn[i]?.cloneAlias || jobsIn[i]?.clone_alias || '').trim();
+    const parentRepoUrl = String(jobsIn[i]?.parentRepoUrl || jobsIn[i]?.parent_repo_url || '').trim();
+    if (!raw || !parentRepoUrl) continue;
+    const parentTop = parentTopDirByKey.get(canonicalRepoUrlKey(parentRepoUrl)) || '';
+    const rel =
+      sanitizeCloneRelPath(cloneAlias) ||
+      resolveRepoCloneRelPath(raw, cloneAlias) ||
+      resolveRepoCloneDirName(raw, '');
+    const stagingName = `${i}-${resolveRepoCloneDirName(raw, path.basename(rel) || cloneAlias || 'repo')}`;
+    const stagingDir = path.join(stagingRoot, stagingName);
+    const finalDir = parentTop
+      ? path.join(layerDir, parentTop, ...String(rel).split('/').filter(Boolean))
+      : path.join(layerDir, ...String(rel).split('/').filter(Boolean));
+    jobs.push({
+      raw,
+      repoDir: stagingDir,
+      finalDir,
+      needsRelocate: true,
+      parentRepoUrl,
+      index: i,
+      requireParentDir: Boolean(parentTop),
+    });
+  }
+
+  jobs.sort((a, b) => a.index - b.index);
+  return { jobs, stagingRoot };
+}
+
+/**
+ * @param {string[] | { url: string, cloneAlias?: string, parentRepoUrl?: string }[]} urlsOrJobs
  */
 async function cloneReposIntoSharedLayer(urlsOrJobs, credRoot, cloudPrefix, accessToken, branchPlans) {
   const jobsIn = (Array.isArray(urlsOrJobs) ? urlsOrJobs : [])
     .map((item) => {
-      if (typeof item === 'string') return { url: String(item || '').trim(), cloneAlias: '' };
+      if (typeof item === 'string') {
+        return { url: String(item || '').trim(), cloneAlias: '', parentRepoUrl: '' };
+      }
       if (item && typeof item === 'object') {
         return {
           url: String(item.url || item.raw || '').trim(),
           cloneAlias: String(item.cloneAlias || item.clone_alias || '').trim(),
+          parentRepoUrl: String(item.parentRepoUrl || item.parent_repo_url || '').trim(),
         };
       }
-      return { url: '', cloneAlias: '' };
+      return { url: '', cloneAlias: '', parentRepoUrl: '' };
     })
     .filter((j) => j.url);
   if (!jobsIn.length) return null;
@@ -596,23 +682,8 @@ async function cloneReposIntoSharedLayer(urlsOrJobs, credRoot, cloudPrefix, acce
   bootstrapCloneLayerId = layerId;
 
   const layerDir = layerPath(layerId);
+  const { jobs, stagingRoot } = planBootstrapCloneJobs(layerDir, jobsIn);
   const n = jobsIn.length;
-  /** @type {{ raw: string, repoDir: string, index: number }[]} */
-  const jobs = [];
-  /** 同批并行克隆须预留目录名：仅查 existsSync 无法避免两仓同名同时 mkdir。 */
-  const reservedNames = new Set();
-  for (let i = 0; i < jobsIn.length; i++) {
-    const { url: raw, cloneAlias } = jobsIn[i];
-    let name = resolveRepoCloneDirName(raw, cloneAlias);
-    let suf = 2;
-    let repoDir = path.join(layerDir, name);
-    while (fs.existsSync(repoDir) || reservedNames.has(path.basename(repoDir))) {
-      repoDir = path.join(layerDir, `${name}_${suf}`);
-      suf += 1;
-    }
-    reservedNames.add(path.basename(repoDir));
-    jobs.push({ raw, repoDir, index: i });
-  }
 
   try {
     bootstrapRepoLogState = {
@@ -622,8 +693,11 @@ async function cloneReposIntoSharedLayer(urlsOrJobs, credRoot, cloudPrefix, acce
       bufs: new Map(),
     };
     for (const job of jobs) {
+      const destLabel = job.needsRelocate
+        ? `${path.relative(layerDir, job.finalDir)} (via staging)`
+        : path.relative(layerDir, job.finalDir) || path.basename(job.repoDir);
       bootstrapRepoLogState.bufs.set(job.raw, {
-        header: `━━ (${job.index + 1}/${n}) ${job.raw}\n→ ${path.basename(job.repoDir)}\n`,
+        header: `━━ (${job.index + 1}/${n}) ${job.raw}\n→ ${destLabel}\n`,
         body: '',
       });
     }
@@ -675,7 +749,7 @@ async function cloneReposIntoSharedLayer(urlsOrJobs, credRoot, cloudPrefix, acce
       if (ent) {
         ent.failNote = `\n[bootstrap-clone] 克隆失败: ${msg}\n`;
       }
-      const repoName = path.basename(job.repoDir);
+      const repoName = path.basename(job.finalDir || job.repoDir);
       await postCloneProgress(
         cloudPrefix,
         accessToken,
@@ -684,6 +758,56 @@ async function cloneReposIntoSharedLayer(urlsOrJobs, credRoot, cloudPrefix, acce
         job.raw,
         { phase: 'bootstrap', index: idx + 1, total: n }
       );
+    }
+
+    // Nested: move successful staging clones under the parent tree before work-branch checkout.
+    for (let idx = 0; idx < jobs.length; idx++) {
+      const job = jobs[idx];
+      const o = outcomes[idx];
+      if (!o?.ok || !job.needsRelocate) continue;
+      if (job.requireParentDir) {
+        const relParts = path.relative(layerDir, job.finalDir).split(path.sep).filter(Boolean);
+        const parentTop = relParts.length ? path.join(layerDir, relParts[0]) : '';
+        if (!parentTop || !fs.existsSync(parentTop)) {
+          const ent = bootstrapRepoLogState.bufs.get(job.raw);
+          if (ent) {
+            ent.failNote = `${ent.failNote || ''}\n[bootstrap-clone] 父仓目录不存在，跳过移入 ${path.relative(layerDir, job.finalDir)}\n`;
+          }
+          continue;
+        }
+      }
+      try {
+        relocateClonedRepo(job.repoDir, job.finalDir);
+        job.repoDir = job.finalDir;
+        const ent = bootstrapRepoLogState.bufs.get(job.raw);
+        if (ent) {
+          ent.body += `\n[bootstrap-clone] 已移入 ${path.relative(layerDir, job.finalDir)}\n`;
+        }
+        await postCloneProgress(
+          cloudPrefix,
+          accessToken,
+          100,
+          `【项目克隆】(${job.index + 1}/${n}) 已移入 ${path.relative(layerDir, job.finalDir)}`,
+          job.raw,
+          { phase: 'bootstrap', index: job.index + 1, total: n },
+        );
+      } catch (relErr) {
+        const msg = relErr instanceof Error ? relErr.message : String(relErr);
+        errors.push(relErr instanceof Error ? relErr : new Error(msg));
+        failedJobs.push({ raw: job.raw, repoDir: job.repoDir, index: job.index, errMsg: msg });
+        const ent = bootstrapRepoLogState.bufs.get(job.raw);
+        if (ent) {
+          ent.failNote = `\n[bootstrap-clone] 移入失败: ${msg}\n`;
+        }
+      }
+    }
+    try {
+      if (fs.existsSync(stagingRoot)) {
+        const left = fs.readdirSync(stagingRoot);
+        if (!left.length) fs.rmSync(stagingRoot, { recursive: true, force: true });
+      }
+    } catch {
+      /* ignore */
     }
 
     const footer = errors.length
@@ -1299,7 +1423,7 @@ export async function runBootstrapAfterListen(ctx) {
   try {
     const repoInputs = await fetchBootstrapRepoInputs(prefix, newAccess, timeoutSec);
     urls = repoInputs.urls;
-    cloneJobs = repoInputs.cloneJobs || urls.map((u) => ({ url: u, cloneAlias: '' }));
+    cloneJobs = repoInputs.cloneJobs || urls.map((u) => ({ url: u, cloneAlias: '', parentRepoUrl: '' }));
     credRoot = repoInputs.credRoot;
     branchPlans = repoInputs.branchPlans || branchPlans;
     lastBootstrapTaskDetail = repoInputs.detail || null;
