@@ -15,8 +15,25 @@
 | `TRAE_CLI` | 可选。若设置，则 **`command_kind=trae`** 时直接以该可执行文件运行，参数形如：`<命令文本> --working-dir=<层目录>`（不再拼接 `--config-file`，由可执行文件自身或环境决定）。 |
 | `ONLINE_PROJECT_LAYERS` | 可选。可写层根目录，默认 `{REPO_ROOT}/onlineProject_state/layers`。 |
 | `PORT` | 可选。HTTP 监听端口，默认 **8765**。 |
-| `CODE_SERVER_ENABLED` | 可选。设为 `1`/`true` 时在容器内后台启动 **code-server**（VS Code Web），监听 **8888**；工作目录见 `CODE_SERVER_WORKDIR`（默认 `/app`）。模拟启动时 `docker run` 会映射 `8888`→宿主机动态端口，日志中给出 `http://127.0.0.1:<端口>/`。`--auth none`，仅适合本机 mock。 |
+| `CODE_SERVER_ENABLED` | 可选。设为 `1`/`true` 时在容器内后台启动 **code-server**（VS Code Web），监听 **8888**；工作目录见 `CODE_SERVER_WORKDIR`（默认 `/app`）。`--auth none`，仅适合受控环境。 |
 | `CODE_SERVER_WORKDIR` | 可选。code-server 打开的根目录，默认 `/app`（含 `trae_agent` 与 `onlineServiceJS`）。 |
+
+### 网络与宿主机端口（重要）
+
+| 启动路径 | Docker 网络 | 宿主机如何访问容器内端口 |
+|---------|-------------|-------------------------|
+| **云 VM UserData**（镜像市场模板 → `/root/init_from_task2app.sh`） | 平台「生成容器脚本」硬编码 **`--network host`**，**无 `-p`** | 与宿主机同网卡命名空间；`HOST_PORT`/`BUSINESS_HOST_PORT`（默认 8765）只用于脚本内监听探测与 `BUSINESS_API_ENDPOINT=http://<公网IP>:端口/api` 推导，**不是** `docker -p` |
+| `go_run_container` / `go_relayToTrae` 选镜像 | **`--network host`** | 同上（本地/模拟对齐云路径） |
+| 本机 `run.sh` 且 `TRAE_ONLINE_JS_DOCKER=1` | bridge + **仅** `-p 127.0.0.1:${HOST_PORT}:${PORT}` | **只映射 onlineServiceJS 的 HTTP 口**；**不会**自动 publish 容器内再拉起的 runAll/业务端口（9999/8003 等） |
+
+**UserData 核对要点**（机器节点真实启动面）：
+
+1. 外层：cloud-init 执行包装脚本，把用户模板 + verify 写入并执行 `/root/init_from_task2app.sh`（见 `taskCloudService` `userdata_build.go` / Django `userdata_verification.py`）。
+2. 内层 `docker run`：以绑定到该区域运行环境的 **`marketplace_userdatatemplate.content`** 为准；平台生成器在 `taskAiProvider/.../userDataScriptLinux.js`（及 Windows 对应文件）写死 `run -d --network host`。
+3. RunInstances 前占位符替换（镜像/token/`__TASK2APP_TASK_CLOUD_PREFIX__` 等）**不会**改写 `--network` / 注入 `-p`。
+4. **风险**：厂商手写/改过的模板若去掉 `--network host` 又未加 `-p`，则容器内 `curl 127.0.0.1:8003` 仍可能成功，但物理机公网 IP 访问不到——排查时先 `grep -E 'docker run|--network|-p ' /root/init_from_task2app.sh`。
+
+因此：在任务云 / mockStart / relay / **标准 UserData** 场景下，日志里 health OK 并不代表「缺端口桥接」——桥接已由 host 网络完成；若从物理机访问失败，优先核对 **进程是否仍监听**、**安全组**，以及 **该节点 UserData 是否仍含 `--network host`**。
 
 Dockerfile 基于 **ubuntu:24.04**（可通过构建参数 `BASE_IMAGE` / 环境变量 `DOCKER_BASE_IMAGE` 覆盖；`buildDocker.sh` 在 docker.io 经损坏的 registry-mirror 解析失败时会自动回退到镜像站全限定名）。多阶段构建 Python venv；主软件源见 `onlineServiceJS/Dockerfile` 头部注释。系统 Python 为 3.12，业务 venv 为 `/app/.venv`。构建参数 `ENABLE_CODE_SERVER=0` 可跳过 code-server 以缩短构建时间。
 
@@ -117,7 +134,7 @@ Dockerfile 基于 **ubuntu:24.04**（可通过构建参数 `BASE_IMAGE` / 环境
 | `GET` | `/api/jobs` | 返回 `{ "jobs": [ ... ] }`。字段含 `git_destructive_locked`：**当前恒为 `false`**（未实现基线锁定）。 |
 | `GET` | `/api/jobs/{job_id}` | 单条任务详情。 |
 | `GET` | `/api/jobs/{job_id}/parent` | 父任务：`parent` 为对象或 `null`。 |
-| `GET` | `/api/jobs/{job_id}/steps` | 仅从 **`ONLINE_PROJECT_STATE_ROOT`** 读取：`runtime/layer_artifacts/{layer_id}/.trajectories/trajectory_*.json`（`agent_steps`）与 `runtime/job_logs/trae_agent_json/{job_id}/step_*/agent_step_full.json`（或 `agent_step.json`）；**不**扫层工作区目录。无数据时 `steps` 为空并附 `note`。 |
+| `GET` | `/api/jobs/{job_id}/steps` | 仅从 **`ONLINE_PROJECT_STATE_ROOT`** 读取：`runtime/layer_artifacts/{layer_id}/.trajectories/trajectory_*.json`（`agent_steps`）与 `runtime/job_logs/trae_agent_json/{job_id}/step_*/agent_step_full.json`（或 `agent_step.json`）；**不**扫层工作区目录。无数据时 `steps` 为空并附 `note`。Query：`after_step`（仅 `step_number > after_step`）、`limit`（1–50；**省略则返回全部**，兼容旧客户端）。分页响应额外含 `total_steps` / `has_more` / `next_after_step`。SaaS 任务详情应按步拉取，勿依赖 `GET /api/jobs/{id}` 内嵌全量 `output`。 |
 
 ### `POST /api/jobs` 行为说明
 

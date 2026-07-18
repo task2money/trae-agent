@@ -103,7 +103,7 @@ import {
   deleteLayerAndMirrorToSaas,
   getJobEvents,
 } from './jobsRuntime.mjs';
-import { getJobStepsForLayer } from './jobSteps.mjs';
+import { getJobStepsForLayer, paginateJobStepsPayload } from './jobSteps.mjs';
 import {
   bundledAutoRunStepsTemplatePath,
   readAutoRunStepsMarkdown,
@@ -637,20 +637,38 @@ api.post('/layers', async (req, res) => {
 });
 
 api.get('/jobs', (req, res) => {
-  res.json({ jobs: listJobs().map(jobToApiDict) });
+  res.json({ jobs: listJobs().map((j) => jobToApiDict(j)) });
 });
 
 api.get('/jobs/:job_id', (req, res) => {
   const j = getJob(req.params.job_id);
   if (!j) return res.status(404).json({ detail: 'not found' });
-  res.json(jobToApiDict(j));
+  const includeOutput = String(req.query.include_output || '') === '1';
+  res.json(jobToApiDict(j, { includeOutput }));
+});
+
+/** 任务原始控制台日志纯文本（供「复制日志」下载 / 按需拉取，避免塞进列表 JSON）。 */
+api.get('/jobs/:job_id/output', (req, res) => {
+  const j = getJob(req.params.job_id);
+  if (!j) return res.status(404).json({ detail: 'not found' });
+  const text = j.output != null ? String(j.output) : '';
+  res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+  res.setHeader('Content-Disposition', 'attachment; filename="job-' + j.id + '.log.txt"');
+  res.send(text);
 });
 
 api.get('/jobs/:job_id/steps', (req, res) => {
   const j = getJob(req.params.job_id);
   if (!j) return res.status(404).json({ detail: 'not found' });
   const payload = getJobStepsForLayer(j.layer_id, j.id, j.command_kind);
-  res.json(payload);
+  const afterStep = parseInt(String(req.query.after_step ?? '0'), 10) || 0;
+  /** 未传 limit 时返回全部（兼容旧客户端）；SaaS/前端应传 limit 做按步拉取 */
+  const limitQ = req.query.limit;
+  const limit =
+    limitQ != null && String(limitQ).trim() !== ''
+      ? parseInt(String(limitQ), 10)
+      : null;
+  res.json(paginateJobStepsPayload(payload, { afterStep, limit }));
 });
 
 api.get('/jobs/:job_id/events', (req, res) => {

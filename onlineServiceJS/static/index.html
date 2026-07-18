@@ -1099,15 +1099,10 @@
       else ban.scrollTop = saved;
     }
 
-    /** Secure Context 外（HTTP 远程 IP）Clipboard API 不可用；textarea + execCommand 回退。 */
-    async function copyTextToClipboard(text) {
-      const payload = text == null ? '' : String(text);
-      if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
-        try {
-          await navigator.clipboard.writeText(payload);
-          return;
-        } catch (_) {}
-      }
+    /** 浏览器剪贴板对超大文本常失败；超过此长度优先走文件下载。 */
+    const CLIPBOARD_MAX_CHARS = 512 * 1024;
+
+    function copyTextViaExecCommand(payload) {
       const ta = document.createElement('textarea');
       ta.value = payload;
       ta.setAttribute('readonly', '');
@@ -1123,12 +1118,67 @@
       }
     }
 
+    /**
+     * Secure Context 外（HTTP 远程 IP）Clipboard API 不可用；textarea + execCommand 回退。
+     * 非安全上下文优先同步 execCommand，避免先 await clipboard 丢失用户手势。
+     */
+    async function copyTextToClipboard(text) {
+      const payload = text == null ? '' : String(text);
+      const canAsyncClipboard =
+        typeof window !== 'undefined' &&
+        window.isSecureContext &&
+        navigator.clipboard &&
+        typeof navigator.clipboard.writeText === 'function';
+      if (!canAsyncClipboard) {
+        copyTextViaExecCommand(payload);
+        return;
+      }
+      try {
+        await navigator.clipboard.writeText(payload);
+        return;
+      } catch (_) {}
+      copyTextViaExecCommand(payload);
+    }
+
+    /** 将文本触发为浏览器本地下载（大日志复制失败时的可靠回退）。 */
+    function downloadTextAsFile(filename, text) {
+      const payload = text == null ? '' : String(text);
+      const blob = new Blob([payload], { type: 'text/plain;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename || 'download.txt';
+      a.rel = 'noopener';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+    }
+
+    /** 通过 GET /api/jobs/:id/output 下载完整任务日志（不经 JSON，适合十余 MB）。 */
+    function downloadJobLogViaApi(jobId) {
+      const id = String(jobId || '').trim();
+      if (!id) throw new Error('missing job id');
+      const u = new URL('/api/jobs/' + encodeURIComponent(id) + '/output', location.origin);
+      u.searchParams.set('access_token', ACCESS_TOKEN);
+      const a = document.createElement('a');
+      a.href = u.toString();
+      a.download = 'job-' + id + '.log.txt';
+      a.rel = 'noopener';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    }
+
     try {
       window.__onlineServiceUiTest = {
         setExecRichIframeSrcdocSticky,
         iframeLogNearBottom,
         setCloneOutBannerText,
         copyTextToClipboard,
+        downloadTextAsFile,
+        downloadJobLogViaApi,
+        CLIPBOARD_MAX_CHARS,
       };
     } catch (_) {}
 
@@ -1679,8 +1729,19 @@
         return;
       }
       jobExecStreamParts.delete(jid);
-      const t = normalizeCloneLogText(job.output || '');
-      fr.srcdoc = buildExecRichSrcdoc([{ contentType: 'text/plain', text: t }]);
+      // 列表 API 默认省略 output；展示时按需拉取并截断，避免 srcdoc 塞入十余 MB。
+      void (async () => {
+        let text = job != null && job.output != null ? String(job.output) : '';
+        if (!text && job && job.output_omitted) {
+          try {
+            const r = await api('/api/jobs/' + encodeURIComponent(jid) + '/output');
+            if (r.ok) text = await r.text();
+          } catch (_) {}
+        }
+        const t = truncateCloneOutput(normalizeCloneLogText(text || ''));
+        if (!fr.isConnected) return;
+        fr.srcdoc = buildExecRichSrcdoc([{ contentType: 'text/plain', text: t }]);
+      })();
     }
 
     async function syncJobStreamFromManifest(jobId) {
@@ -2908,14 +2969,53 @@
       container.querySelectorAll('.copy-job-log').forEach((btn) => {
         btn.onclick = debounceClick(async () => {
           const id = btn.getAttribute('data-copy-log');
+          if (!id) return;
           const job = lastJobs.find((x) => x.id === id);
-          const text = job != null && job.output != null ? String(job.output) : '';
+          const knownChars =
+            job && typeof job.output_chars === 'number'
+              ? job.output_chars
+              : job != null && job.output != null
+                ? String(job.output).length
+                : null;
           const label = btn.textContent;
           btn.disabled = true;
           btn.setAttribute('aria-busy', 'true');
           try {
-            await copyTextToClipboard(text);
-            btn.textContent = '已复制';
+            // 超大日志直接下载，避免剪贴板 API / execCommand 失败弹窗。
+            if (knownChars != null && knownChars > CLIPBOARD_MAX_CHARS) {
+              downloadJobLogViaApi(id);
+              btn.textContent = '已下载';
+              setTimeout(() => {
+                btn.textContent = label;
+              }, 1600);
+              return;
+            }
+            let text =
+              job != null && job.output != null && !job.output_omitted
+                ? String(job.output)
+                : '';
+            if (!text) {
+              const r = await api('/api/jobs/' + encodeURIComponent(id) + '/output');
+              if (!r.ok) {
+                const t = await r.text();
+                const { msg, traceId } = parseApiErrorResponse(r, t);
+                showRequestError('获取日志失败：' + msg, traceId);
+                return;
+              }
+              text = await r.text();
+            }
+            if (text.length > CLIPBOARD_MAX_CHARS) {
+              downloadTextAsFile('job-' + id + '.log.txt', text);
+              btn.textContent = '已下载';
+            } else {
+              try {
+                await copyTextToClipboard(text);
+                btn.textContent = '已复制';
+              } catch (e) {
+                downloadTextAsFile('job-' + id + '.log.txt', text);
+                btn.textContent = '已下载';
+              }
+            }
             setTimeout(() => {
               btn.textContent = label;
             }, 1600);

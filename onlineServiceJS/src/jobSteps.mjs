@@ -217,6 +217,62 @@ function finalStepsNote(commandKind, jid) {
   return '未找到步骤：请确认 onlineProject_state 下存在 runtime/layer_artifacts 或 runtime/job_logs/trae_agent_json 数据';
 }
 
+function stepNumberOf(step) {
+  if (!step || typeof step !== 'object') return 0;
+  const n = Number(step.step_number);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+}
+
+/**
+ * 按 step_number 分页，避免一次返回整份轨迹（含大段 llm/tool 内容）拖垮转发。
+ * @param {{ steps?: object[], note?: string|null, trajectory_file?: string|null, task?: string|null }} payload
+ * @param {{ afterStep?: number, limit?: number|null }} [opts]
+ *   - limit 为 null/undefined：返回全部（兼容旧客户端）
+ *   - afterStep：仅 step_number > afterStep
+ * @returns {object}
+ */
+export function paginateJobStepsPayload(payload, opts = {}) {
+  const base =
+    payload && typeof payload === 'object'
+      ? payload
+      : { steps: [], note: null, trajectory_file: null, task: null };
+  const all = Array.isArray(base.steps) ? base.steps.slice() : [];
+  all.sort((a, b) => {
+    const da = stepNumberOf(a);
+    const db = stepNumberOf(b);
+    if (da !== db) return da - db;
+    return 0;
+  });
+  const afterStep = Math.max(0, Math.floor(Number(opts.afterStep) || 0));
+  const limitRaw = opts.limit;
+  const paginate = limitRaw != null && String(limitRaw).trim() !== '';
+  if (!paginate) {
+    return {
+      ...base,
+      steps: all,
+      total_steps: all.length,
+      after_step: afterStep,
+      next_after_step: null,
+      has_more: false,
+    };
+  }
+  let limit = Math.floor(Number(limitRaw));
+  if (!Number.isFinite(limit) || limit < 1) limit = 20;
+  if (limit > 50) limit = 50;
+  const filtered = all.filter((s) => stepNumberOf(s) > afterStep);
+  const page = filtered.slice(0, limit);
+  const hasMore = filtered.length > page.length;
+  const lastNum = page.length ? stepNumberOf(page[page.length - 1]) : afterStep;
+  return {
+    ...base,
+    steps: page,
+    total_steps: all.length,
+    after_step: afterStep,
+    next_after_step: hasMore ? lastNum : null,
+    has_more: hasMore,
+  };
+}
+
 /**
  * @param {string} layerId
  * @param {string} [jobId]

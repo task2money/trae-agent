@@ -242,8 +242,26 @@ function loadPriorTrajectoryContextPrefix(priorJobId) {
   return block ? `${block}\n\n` : '';
 }
 
-export function jobToApiDict(rec) {
-  return { ...rec, git_destructive_locked: false };
+/**
+ * 将内存中的 job 转为 API 可见字段。
+ * 默认不附带完整 output（列表 / 层级快照可达十余 MB，拖垮 JSON 与剪贴板）；
+ * 需要全文时传 `{ includeOutput: true }`（如 GET /api/jobs/:id?include_output=1）。
+ *
+ * @param {object} rec
+ * @param {{ includeOutput?: boolean }} [opts]
+ */
+export function jobToApiDict(rec, opts = {}) {
+  const includeOutput = opts.includeOutput === true;
+  const out = rec && rec.output != null ? String(rec.output) : '';
+  const base = { ...rec, git_destructive_locked: false, output_chars: out.length };
+  if (includeOutput) {
+    base.output = out;
+    base.output_omitted = false;
+  } else {
+    delete base.output;
+    base.output_omitted = true;
+  }
+  return base;
 }
 
 export function listJobs() {
