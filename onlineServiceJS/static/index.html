@@ -639,6 +639,16 @@
       <div class="err-msg" id="resetErr"></div>
     </section>
     <section>
+      <h2>网络诊断</h2>
+      <p class="meta">容器内端口可达性检测。部分端口在 host 网络模式下全部可达，在 bridge 模式下须确认 <code>-p</code> 映射。</p>
+      <button type="button" class="secondary" id="btnPortDiag" data-testid="btn-port-diag">诊断端口可达性</button>
+      <div class="meta" id="portDiagResult" style="margin-top: 0.5rem;"></div>
+      <pre class="out" id="portDiagOut" style="max-height: 180px; margin-top: 0.5rem;"></pre>
+      <p class="meta" style="margin-top: 0.35rem; color: var(--warn);">
+        提示：容器内 <code>127.0.0.1</code> 端口可达并不代表宿主机或公网可达。实际可达性取决于 Docker 网络模式（<code>--network host</code> 所有端口映射到宿主机；<code>bridge</code> 仅 <code>-p</code> 声明的端口映射）。
+      </p>
+    </section>
+    <section>
       <h2>克隆仓库</h2>
       <p class="meta">新建可写层并在该目录执行 <code>git clone … .</code>（服务器需已安装 <code>git</code>）</p>
       <div class="row">
@@ -1502,6 +1512,69 @@
       return api(path, merged).finally(() => clearTimeout(timer));
     };
 
+    /** 容器内常见服务端口列表 */
+    const COMMON_PORTS = [22, 80, 443, 3000, 5432, 6379, 8000, 8003, 8004, 8012, 8015, 8016, 8765, 8888, 9090, 9999, 15672, 27017];
+
+    /** 诊断端口可达性：对 commonPorts 列表逐一发起 HTTP GET /healthz 探测（容器内 127.0.0.1）。 */
+    async function diagnoseContainerPortReachability() {
+      const resultEl = document.getElementById('portDiagResult');
+      const outEl = document.getElementById('portDiagOut');
+      const btn = document.getElementById('btnPortDiag');
+      if (!resultEl || !outEl || !btn) return;
+
+      btn.disabled = true;
+      btn.textContent = '诊断中…';
+      resultEl.textContent = '';
+      outEl.textContent = '';
+
+      const reachable = [];
+      const unreachable = [];
+
+      for (const port of COMMON_PORTS) {
+        try {
+          const url = 'http://127.0.0.1:' + port + '/healthz';
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), 2000);
+          const r = await fetch(url, { method: 'GET', signal: controller.signal });
+          clearTimeout(timer);
+          reachable.push(port + ' (HTTP ' + r.status + ')');
+        } catch {
+          unreachable.push(port);
+        }
+      }
+
+      resultEl.textContent = '可达: ' + reachable.length + '  |  不可达: ' + unreachable.length;
+
+      const lines = [];
+      if (reachable.length) {
+        lines.push('--- 可达端口 ---');
+        for (let i = 0; i < reachable.length; i++) {
+          lines.push('  ' + reachable[i]);
+        }
+      }
+      if (unreachable.length) {
+        lines.push('--- 不可达端口 ---');
+        for (let i = 0; i < unreachable.length; i++) {
+          lines.push('  ' + unreachable[i]);
+        }
+      }
+      outEl.textContent = lines.join('\n');
+
+      btn.disabled = false;
+      btn.textContent = '诊断端口可达性';
+    }
+
+    // 绑定事件在 DOM 加载完成后
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', function() {
+        var btn = document.getElementById('btnPortDiag');
+        if (btn) btn.addEventListener('click', diagnoseContainerPortReachability);
+      });
+    } else {
+      var btn = document.getElementById('btnPortDiag');
+      if (btn) btn.addEventListener('click', diagnoseContainerPortReachability);
+    }
+
     async function refreshHostRepoPushLine() {
       const el = document.getElementById('hostRepoPushLine');
       if (!el) return;
@@ -1679,11 +1752,68 @@
       return r.json();
     }
 
+    /**
+     * 增量追加 DOM 节点到 iframe body（避免全量 innerHTML 重写导致选区丢失与长日志刷新成本）。
+     * 当 seq 连续递增且 iframe 已初始化时走增量路径；否则回退到全量重建。
+     */
+    function appendExecRichSegmentToIframe(fr, seq, text, contentType) {
+      if (!fr) return;
+      const ct = normalizeExecStreamContentType(contentType);
+      try {
+        const doc = fr.contentDocument;
+        if (!doc || !doc.body || !doc.head || !doc.head.querySelector('style')) {
+          // iframe 尚未完成样式初始化，回退全量重建
+          return false;
+        }
+        const lastSeq = typeof fr.__logLastSeq === 'number' ? fr.__logLastSeq : -1;
+        // 仅当 seq 连续递增（新段紧接上一段）时增量追加
+        if (seq !== lastSeq + 1) return false;
+        // 检查是否有 overflow 滚动容器（需保留 sticky 逻辑）
+        const scrollEl = iframeLogScrollingEl(doc);
+        const stickToBottom = scrollEl && scrollElHasOverflow(scrollEl)
+          ? scrollElNearBottom(scrollEl, IFRAME_LOG_STICK_BOTTOM_PX)
+          : (fr.__logStickBottom !== false);
+        const container = scrollEl && scrollElHasOverflow(scrollEl) ? scrollEl : doc.body;
+        if (ct === 'text/html') {
+          const wrapper = doc.createElement('div');
+          wrapper.innerHTML = String(text);
+          while (wrapper.firstChild) container.appendChild(wrapper.firstChild);
+        } else {
+          // text/plain：追加 <pre> 或追加到最后一个 <pre>
+          let pre = container.lastElementChild;
+          if (!pre || pre.tagName !== 'PRE') {
+            pre = doc.createElement('pre');
+            pre.style.cssText = 'margin:0;white-space:pre-wrap;word-break:break-all;';
+            container.appendChild(pre);
+          }
+          pre.appendChild(doc.createTextNode(String(text)));
+        }
+        if (stickToBottom) {
+          if (scrollEl && scrollElHasOverflow(scrollEl)) scrollEl.scrollTop = scrollEl.scrollHeight;
+          else doc.body.scrollTop = doc.body.scrollHeight;
+        }
+        fr.__logLastSeq = seq;
+        return true;
+      } catch (_) {
+        return false;
+      }
+    }
+
     function rebuildCloneOutFrameFromParts() {
       const keys = [...execStreamUi.cloneParts.keys()].sort((a, b) => a - b);
-      const frags = keys.map((k) => execStreamUi.cloneParts.get(k));
       const fr = document.getElementById('cloneOutFrame');
       if (!fr) return;
+      // 尝试增量追加（仅当只有最后一个 key 是新段时）
+      if (keys.length > 0) {
+        const lastKey = keys[keys.length - 1];
+        const lastPart = execStreamUi.cloneParts.get(lastKey);
+        if (lastPart && appendExecRichSegmentToIframe(fr, lastKey, lastPart.text, lastPart.contentType)) {
+          return;
+        }
+      }
+      // 回退：全量重建
+      const frags = keys.map((k) => execStreamUi.cloneParts.get(k));
+      fr.__logLastSeq = keys.length > 0 ? keys[keys.length - 1] : -1;
       setExecRichIframeSrcdocSticky(fr, buildExecRichSrcdoc(frags));
     }
 

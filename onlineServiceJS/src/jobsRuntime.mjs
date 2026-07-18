@@ -54,6 +54,19 @@ function recordJobEvent(jobId, phase, message = '') {
   jobEvents.set(jobId, events);
 }
 
+const MAX_OUTPUT_LENGTH = 50000;
+const OUTPUT_TRUNCATION_MARKER = '\n[...truncated...]\n';
+
+/**
+ * Truncate job output if it exceeds MAX_OUTPUT_LENGTH, keeping only the tail.
+ * ExecStream is NOT affected — only the in-memory rec.output buffer.
+ */
+function truncateJobOutput(rec) {
+  if (!rec || typeof rec.output !== 'string') return;
+  if (rec.output.length <= MAX_OUTPUT_LENGTH) return;
+  rec.output = OUTPUT_TRUNCATION_MARKER + rec.output.slice(-MAX_OUTPUT_LENGTH);
+}
+
 export function getJobEvents(jobId, offset = 0, limit = 500) {
   const events = jobEvents.get(jobId) || [];
   const start = Math.max(0, offset);
@@ -69,6 +82,9 @@ function newJobId() {
 }
 
 function saveState() {
+  for (const j of jobs.values()) {
+    truncateJobOutput(j);
+  }
   const payload = {
     jobs: [...jobs.values()].map((j) => ({ ...j })),
     layer_queues: { ...layerQueues },

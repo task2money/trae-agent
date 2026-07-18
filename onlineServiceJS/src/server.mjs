@@ -7,7 +7,14 @@ import multer from 'multer';
 import YAML from 'yaml';
 import { spawn, spawnSync } from 'child_process';
 
-import { authMiddleware, accessTokenExpected } from './auth.mjs';
+import {
+  authMiddleware,
+  accessTokenExpected,
+  isTokenBootstrapFailed,
+  setTokenBootstrapFailed,
+  respondTokenBootstrapFailClosed,
+  tokenBootstrapFailClosedDetail,
+} from './auth.mjs';
 import { resolveUiPathAccessToken, isRememberedStaleAccessToken, rememberStaleAccessToken } from './uiAccessToken.mjs';
 import { getAgentRenderHints } from './agentRenderHints.mjs';
 import { serviceRoot, configFilePath, repoRoot, logsDir } from './paths.mjs';
@@ -410,6 +417,9 @@ function sendUiRenderHintsHtml(res, serveToken) {
  * @param {{ renderHints?: boolean }} [opts]
  */
 function handleUiAccessTokenRoute(req, res, opts = {}) {
+  if (isTokenBootstrapFailed()) {
+    return respondTokenBootstrapFailClosed(res);
+  }
   const expected = accessTokenExpected();
   const resolved = resolveUiPathAccessToken(req.params.access_token, expected);
   if (resolved.redirectTo) {
@@ -452,6 +462,22 @@ app.get('/ui/:access_token/render-hints', (req, res) =>
 
 app.use('/static', express.static(path.join(serviceRoot(), 'static')));
 
+/**
+ * 公开探活：换票 fail-closed 时返回 503，便于编排区分「进程在听但业务不可用」。
+ * 无需 ACCESS_TOKEN。
+ */
+app.get('/healthz', (req, res) => {
+  if (isTokenBootstrapFailed()) {
+    return res.status(503).json({
+      status: 'unavailable',
+      token_bootstrap: 'failed',
+      detail: tokenBootstrapFailClosedDetail(),
+      error_code: 'TOKEN_BOOTSTRAP_FAILED',
+    });
+  }
+  return res.json({ status: 'ok', token_bootstrap: 'ok' });
+});
+
 const api = express.Router();
 api.use(authMiddleware);
 
@@ -461,6 +487,9 @@ api.use(authMiddleware);
  * 挂在 authMiddleware 之前需单独校验。
  */
 app.get('/api/session/ui-redirect', (req, res) => {
+  if (isTokenBootstrapFailed()) {
+    return respondTokenBootstrapFailClosed(res);
+  }
   const expected = accessTokenExpected();
   if (!expected) {
     return res.status(503).json({ detail: 'ACCESS_TOKEN not configured' });
@@ -1262,7 +1291,12 @@ api.get('/layers/:layer_id/children', (req, res) => {
 });
 
 api.get('/layers/:layer_id/diff/parent/files', (req, res) => {
-  res.json(getLayerParentDiffFiles(req.params.layer_id));
+  res.json(
+    getLayerParentDiffFiles(req.params.layer_id, {
+      offset: req.query.offset,
+      limit: req.query.limit,
+    }),
+  );
 });
 
 api.get('/layers/:layer_id/diff/parent/file', (req, res) => {
@@ -2097,6 +2131,18 @@ const host = '0.0.0.0';
  * the await window of token exchange (otherwise another process / orphan race
  * yields listen EADDRINUSE after exchange-refresh succeeds).
  */
+/**
+ * OPT-024: 端口桥接行为说明：
+ * - host 网络（`--network host`）：容器内全部端口（含后续 runAll 启动的子服务）直接暴露在宿主机上，
+ *   但安全组/防火墙仍可能阻止外部访问。127.0.0.1 可达不代表宿主机/公网可达。
+ * - bridge 网络 + `-p`：仅声明 `-p hostPort:containerPort` 的端口映射到宿主机。
+ *   onlineServiceJS 默认 8765 由 Dockerfile / run.sh 映射；子服务（9999 runAll 等）默认不映射。
+ * - 从物理机访问容器内 8003/8004/9999 等端口若失败，应先检查：
+ *   1. 容器进程是否监听（`docker exec <容器> ss -tlnp`）
+ *   2. Docker 网络模式与端口映射（`docker inspect <容器> | jq '.[].HostConfig'`）
+ *   3. 宿主机安全组/iptables
+ * - 任务前端 UI 的「诊断端口可达性」按钮通过容器内 127.0.0.1 探测端口，仅反映容器内可达性。
+ */
 function listenHttpServer() {
   return new Promise((resolve, reject) => {
     const server = app.listen(port, host, () => {
@@ -2147,6 +2193,11 @@ export async function main({
     } catch (e) {
       console.error('[onlineServiceJS] bootstrap (token) error:', e);
       if (strict) process.exit(1);
+      const reason = String(e?.message || e || 'token exchange failed').slice(0, 500);
+      setTokenBootstrapFailed(true, reason);
+      console.error(
+        `[onlineServiceJS] TOKEN_BOOTSTRAP_FAILED fail-closed: protected routes return 503 (${reason.slice(0, 200)})`,
+      );
     }
     return;
   }
@@ -2166,7 +2217,14 @@ export async function main({
   } catch (e) {
     console.error('[onlineServiceJS] bootstrap (token) error:', e);
     if (strict) process.exit(1);
-    bootstrapCtx = { skipped: true };
+    // 非 strict：不得带着无效 ACCESS_TOKEN 继续对外提供受保护 API（fail-closed）。
+    // intentional skip（无 TaskApi 前缀）走正常返回 { skipped: true }，不进本分支。
+    const reason = String(e?.message || e || 'token exchange failed').slice(0, 500);
+    setTokenBootstrapFailed(true, reason);
+    console.error(
+      `[onlineServiceJS] TOKEN_BOOTSTRAP_FAILED fail-closed: protected routes return 503 (${reason.slice(0, 200)})`,
+    );
+    bootstrapCtx = { skipped: true, tokenExchangeFailed: true };
   }
   ensureStartupEmptyLayer();
   try {
@@ -2177,6 +2235,7 @@ export async function main({
 
   broadcast({ type: 'service_ready', port });
   // register-reachability（server_url）与 SaaS 心跳须在 HTTP 已监听后立即执行，不得被引导克隆/写 YAML 阻塞。
+  // tokenExchangeFailed 时 ctx.skipped=true，本函数会 no-op，不会用无效 token 注册。
   try {
     await registerReachabilityAfterBootstrap(bootstrapCtx);
   } catch (e) {
@@ -2197,6 +2256,12 @@ export async function main({
     console.log(
       `[onlineServiceJS] 已调度 SaaS 层图推送（首跳延迟 ${lgDelay}s，间隔见 TRAE_SAAS_LAYER_GRAPH_PUSH_INTERVAL_SEC）`,
     );
+  }
+  if (bootstrapCtx.tokenExchangeFailed) {
+    console.error(
+      '[onlineServiceJS] skip post-listen bootstrap (token exchange failed, fail-closed)',
+    );
+    return;
   }
   try {
     await runBootstrapAfterListen(bootstrapCtx);

@@ -35,6 +35,19 @@
 
 因此：在任务云 / mockStart / relay / **标准 UserData** 场景下，日志里 health OK 并不代表「缺端口桥接」——桥接已由 host 网络完成；若从物理机访问失败，优先核对 **进程是否仍监听**、**安全组**，以及 **该节点 UserData 是否仍含 `--network host`**。
 
+### 端口可达性诊断（OPT-20260718-024）
+
+当容器内服务 health check 正常但外部无法访问时，可在 onlineServiceJS 控制台执行以下诊断：
+
+1. **查看当前监听端口**：容器内 `ss -tlnp` 或 `netstat -tlnp`（需容器有对应工具）
+2. **容器内自检**：`curl -sI http://127.0.0.1:<PORT>/healthz`（验证进程存活）
+3. **宿主机可达性**：从宿主机执行 `curl -sI http://127.0.0.1:<PORT>/healthz`（host 网络下应可达）
+4. **公网可达性**：从外部机器执行 `curl -sI http://<公网IP>:<PORT>/healthz`（验证安全组/防火墙）
+
+已知证据：任务 `task_13464457269667337872` 上 agent 曾对 `*:9999/8003/8004` LISTEN 做 health OK；事后进程退出后公网仅剩 `8765/8888/9998/8796`。host 网络本身正常——问题在于端口对应的**进程生命周期**而非网络桥接。
+
+未来可增加控制台「诊断端口可达性」按钮，一键执行上述步骤并展示结果。
+
 Dockerfile 基于 **ubuntu:24.04**（可通过构建参数 `BASE_IMAGE` / 环境变量 `DOCKER_BASE_IMAGE` 覆盖；`buildDocker.sh` 在 docker.io 经损坏的 registry-mirror 解析失败时会自动回退到镜像站全限定名）。多阶段构建 Python venv；主软件源见 `onlineServiceJS/Dockerfile` 头部注释。系统 Python 为 3.12，业务 venv 为 `/app/.venv`。构建参数 `ENABLE_CODE_SERVER=0` 可跳过 code-server 以缩短构建时间。
 
 容器换票、引导克隆等仍可使用：`TaskApiEndPoint`、`BusinessApiEndPoint`、`BUSINESS_API_ENDPOINT`、`tenantId`、`workspaceId`、`taskId`、`ACCESS_TOKEN`（与任务云约定一致；**完整协议**见 `task2app/Saas_project/skillList/machine_container.md`）。**`TaskApiEndPoint` 推荐**为 `…/api/tenant/…/workspace/…/task/…/cloud`；**容错**：`saasTaskCloud.mjs` 的 `taskApiPrefix()` 亦可从 pathname 解析 **`/tenant/…/task-detail/<task>/`**（浏览器任务详情页 URL）及 **`/api/…/task-detail/<task>`**，避免未设三环境变量时换票失败、`container_refresh_token` 不落库。**启动就绪日志**：标准输出含 **`[onlineServiceJS] server listening on http://0.0.0.0:<PORT>`**，供编排检测。监听成功后**先** `register-reachability`（写入 `server_url`）并启动 **SaaS 心跳**，再**异步**执行引导克隆与 `service_config.yaml` 写入，避免长时间 `git clone` 阻塞任务详情拉层图与心跳。
@@ -76,6 +89,7 @@ Dockerfile 基于 **ubuntu:24.04**（可通过构建参数 `BASE_IMAGE` / 环境
 | 路径 | 说明 |
 |------|------|
 | `GET /skill.md` | 本 Skill 文档（Markdown，`text/markdown; charset=utf-8`）。 |
+| `GET /healthz` | 探活。正常返回 `{ status: "ok", token_bootstrap: "ok" }`。容器换票失败且非 `TASK_API_BOOTSTRAP_STRICT_STARTUP` 时进入 **fail-closed**：本接口与受保护 `/api/*`、`/ui/*` 均返回 **503**，`error_code=TOKEN_BOOTSTRAP_FAILED`（进程仍监听端口，但不对外提供无效 token 下的业务 API）。无 TaskApi 前缀的本地 intentional skip **不**触发 fail-closed。 |
 
 **说明**：本服务**不提供** `GET /docs`、`GET /openapi.json`；请以本文档与 `src/server.mjs` 为准。
 
@@ -85,6 +99,8 @@ Dockerfile 基于 **ubuntu:24.04**（可通过构建参数 `BASE_IMAGE` / 环境
 
 - 查询参数：`?access_token=<ACCESS_TOKEN>`
 - 请求头：`X-Access-Token: <ACCESS_TOKEN>`
+
+换票失败 fail-closed 时，即使携带与 `ACCESS_TOKEN` 相同的值也会收到 **503** `TOKEN_BOOTSTRAP_FAILED`（避免平台 by-scope 有效 token 与容器无效 env 长期不一致、全线 401）。
 
 ## 配置
 
@@ -170,7 +186,7 @@ Dockerfile 基于 **ubuntu:24.04**（可通过构建参数 `BASE_IMAGE` / 环境
 | `GET` | `/api/layers/{layer_id}/files/{file_rel_posix}` | 读取单文件；支持 `max_bytes` 等（见路由实现）。 |
 | `GET` | `/api/layers/{layer_id}/children` | 列目录子项；查询参数 `dir` 等。 |
 | `GET` | `/api/layers/{layer_id}/diff/parent` | **未提供**该路由（无目录树全文 diff）；变动请用 `diff/parent/files` 与 `diff/parent/file`。 |
-| `GET` | `/api/layers/{layer_id}/diff/parent/files` | 相对父层工作目录的条目对比列表（`added`/`removed`/`modified`），见 `layerParentDiff.mjs`；无父层时 `detail` 说明。 |
+| `GET` | `/api/layers/{layer_id}/diff/parent/files` | 相对父层工作目录的条目对比列表（`added`/`removed`/`modified`），见 `layerParentDiff.mjs`；无父层时 `detail` 说明。可选查询 `offset`/`limit`（limit 上限 500）分页，响应含 `change_count`/`next_offset`/`has_more`；未传 `limit` 时仍返回全量。 |
 | `GET` | `/api/layers/{layer_id}/diff/parent/file` | 查询参数 **`path`**：单路径文本 diff（或二进制提示）；无父层 **400**。 |
 | `DELETE` | `/api/layers/{layer_id}` | 删除该层及其直接子层（自底向上顺序见 `deleteLayerTree`）。 |
 | `POST` | `/api/layers/{layer_id}/queue` | 向指定层添加队列项，返回创建结果。 |

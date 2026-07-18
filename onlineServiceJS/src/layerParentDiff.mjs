@@ -12,6 +12,40 @@ import { gitCmd } from './gitCmd.mjs';
 
 const MAX_DIFF_ENTRIES = 4000;
 const MAX_FILE_BYTES_FULL_COMPARE = 25 * 1024 * 1024;
+/** 变动列表分页：未传 limit 时返回全量（兼容管理页）；传入时按页切片 */
+const MAX_DIFF_PAGE_LIMIT = 500;
+
+/**
+ * @param {object} payload
+ * @param {{ offset?: number|string|null, limit?: number|string|null }} [opts]
+ */
+export function applyLayerParentDiffPagination(payload, opts = {}) {
+  const base = payload && typeof payload === 'object' ? payload : {};
+  const all = Array.isArray(base.changes) ? base.changes : [];
+  const total = all.length;
+  let offset = Math.floor(Number(opts.offset));
+  if (!Number.isFinite(offset) || offset < 0) offset = 0;
+  const limRaw = opts.limit;
+  const limitProvided = limRaw != null && String(limRaw).trim() !== '';
+  let limit = null;
+  if (limitProvided) {
+    limit = Math.floor(Number(limRaw));
+    if (!Number.isFinite(limit) || limit < 1) limit = 1;
+    if (limit > MAX_DIFF_PAGE_LIMIT) limit = MAX_DIFF_PAGE_LIMIT;
+  }
+  const page = limit == null ? all : all.slice(offset, offset + limit);
+  const nextOffset = offset + page.length;
+  const hasMore = limit == null ? false : nextOffset < total;
+  return {
+    ...base,
+    changes: page,
+    change_count: total,
+    offset,
+    next_offset: nextOffset,
+    has_more: hasMore,
+    truncated: Boolean(base.truncated),
+  };
+}
 
 function normalizeRel(p) {
   return String(p || '')
@@ -280,19 +314,25 @@ function resolvePairedWorkdirsForDiff(parentId, lid, rel) {
 
 /**
  * 将子层中每个 git 工作根与父层对应根成对对比，路径与「扁平文件列表 / files/*」一致（多仓带仓库目录前缀）。
+ * @param {string} layerId
+ * @param {{ offset?: number|string|null, limit?: number|string|null }} [opts]
+ *   传入 limit 时对 changes 分页，并带 change_count/next_offset/has_more；未传则返回全量（兼容旧客户端）。
  */
-export function getLayerParentDiffFiles(layerId) {
+export function getLayerParentDiffFiles(layerId, opts = {}) {
   const lid = String(layerId || '').trim();
   const known = new Set(listLayerRows().map((r) => r.layer_id));
   if (!known.has(lid)) {
-    return {
-      layer_id: lid,
-      parent_layer_id: null,
-      same: false,
-      changes: [],
-      truncated: false,
-      detail: '层不存在或不在可写层列表中。',
-    };
+    return applyLayerParentDiffPagination(
+      {
+        layer_id: lid,
+        parent_layer_id: null,
+        same: false,
+        changes: [],
+        truncated: false,
+        detail: '层不存在或不在可写层列表中。',
+      },
+      opts,
+    );
   }
 
   const meta = readLayerMeta(lid);
@@ -300,15 +340,18 @@ export function getLayerParentDiffFiles(layerId) {
     meta?.parent_layer_id && known.has(meta.parent_layer_id) ? meta.parent_layer_id : null;
   if (!parentId) parentId = resolvedParentLayerId(lid, known, null);
   if (!parentId || !known.has(parentId)) {
-    return {
-      layer_id: lid,
-      parent_layer_id: null,
-      same: false,
-      changes: [],
-      truncated: false,
-      detail:
-        '当前层无可用父层对比：需要 layer_meta.json 中的 parent_layer_id，或工作区目录树可解析到相邻父层。',
-    };
+    return applyLayerParentDiffPagination(
+      {
+        layer_id: lid,
+        parent_layer_id: null,
+        same: false,
+        changes: [],
+        truncated: false,
+        detail:
+          '当前层无可用父层对比：需要 layer_meta.json 中的 parent_layer_id，或工作区目录树可解析到相邻父层。',
+      },
+      opts,
+    );
   }
 
   const rootsC = layerGitWorkdirRootsForFileListing(lid);
@@ -317,27 +360,33 @@ export function getLayerParentDiffFiles(layerId) {
     const workP0 = layerPrimaryGitWorkdir(parentId);
     const workC0 = layerPrimaryGitWorkdir(lid);
     if (!workP0 || !workC0) {
-      return {
-        layer_id: lid,
-        parent_layer_id: parentId,
-        same: false,
-        changes: [],
-        truncated: false,
-        detail: '无法解析父层或当前层的 git 工作目录。',
-      };
+      return applyLayerParentDiffPagination(
+        {
+          layer_id: lid,
+          parent_layer_id: parentId,
+          same: false,
+          changes: [],
+          truncated: false,
+          detail: '无法解析父层或当前层的 git 工作目录。',
+        },
+        opts,
+      );
     }
     const cp = collectIndex(workP0);
     const cc = collectIndex(workC0);
     const truncated = cp.truncated || cc.truncated;
     const changes = compareIndices(workP0, workC0, cp.map, cc.map);
-    return finalizeLayerParentDiffPayload(parentId, lid, {
-      layer_id: lid,
-      parent_layer_id: parentId,
-      same: changes.length === 0,
-      changes,
-      truncated,
-      detail: '',
-    });
+    return applyLayerParentDiffPagination(
+      finalizeLayerParentDiffPayload(parentId, lid, {
+        layer_id: lid,
+        parent_layer_id: parentId,
+        same: changes.length === 0,
+        changes,
+        truncated,
+        detail: '',
+      }),
+      opts,
+    );
   }
 
   const allChanges = [];
@@ -365,14 +414,17 @@ export function getLayerParentDiffFiles(layerId) {
     const workP0 = layerPrimaryGitWorkdir(parentId);
     const workC0 = layerPrimaryGitWorkdir(lid);
     if (!workP0 || !workC0) {
-      return {
-        layer_id: lid,
-        parent_layer_id: parentId,
-        same: false,
-        changes: [],
-        truncated: false,
-        detail: '无法解析父层或当前层的 git 工作目录。',
-      };
+      return applyLayerParentDiffPagination(
+        {
+          layer_id: lid,
+          parent_layer_id: parentId,
+          same: false,
+          changes: [],
+          truncated: false,
+          detail: '无法解析父层或当前层的 git 工作目录。',
+        },
+        opts,
+      );
     }
     const cp = collectIndex(workP0);
     const cc = collectIndex(workC0);
@@ -382,14 +434,17 @@ export function getLayerParentDiffFiles(layerId) {
 
   allChanges.sort((a, b) => String(a.path).localeCompare(String(b.path)));
   const same = allChanges.length === 0;
-  return finalizeLayerParentDiffPayload(parentId, lid, {
-    layer_id: lid,
-    parent_layer_id: parentId,
-    same,
-    changes: allChanges,
-    truncated: anyTruncated,
-    detail: '',
-  });
+  return applyLayerParentDiffPagination(
+    finalizeLayerParentDiffPayload(parentId, lid, {
+      layer_id: lid,
+      parent_layer_id: parentId,
+      same,
+      changes: allChanges,
+      truncated: anyTruncated,
+      detail: '',
+    }),
+    opts,
+  );
 }
 
 function simpleUnifiedDiff(parentText, childText, relLabel) {
