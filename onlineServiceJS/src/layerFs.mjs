@@ -68,6 +68,28 @@ export const LAYER_ID_RE = /^(\d{8}_\d{6})_([0-9a-fA-F]+)$/;
 
 const SKIP_NAMES = new Set(['__pycache__', '.DS_Store', '.git']);
 const SKIP_RECURSIVE = new Set(['__pycache__', '.DS_Store']);
+/** 文件树扁平列表跳过的目录名（避免 node_modules 等占满 max_files 导致顶层目录缺失） */
+const SKIP_LISTING_DIR_NAMES = new Set([
+  '__pycache__',
+  '.DS_Store',
+  '.git',
+  'node_modules',
+  '.venv',
+  'venv',
+  'dist',
+  'build',
+  '.turbo',
+  '.next',
+  'coverage',
+]);
+
+function shouldSkipListingDirName(name) {
+  const n = String(name || '');
+  if (!n || SKIP_LISTING_DIR_NAMES.has(n)) return true;
+  // 本地/工具虚拟环境：.venv-archimate 等
+  if (n.startsWith('.venv')) return true;
+  return false;
+}
 
 export function newLayerId() {
   const d = new Date();
@@ -238,47 +260,175 @@ export function clickedPathIsGitRepoRoot(ctx) {
   return dirHasGit(abs);
 }
 
-function walkRepoRelativeFiles(absBase, relPrefix, files, maxFiles, deletedInner = new Set()) {
-  function walk(d, rel) {
-    for (const ent of fs.readdirSync(d, { withFileTypes: true })) {
-      if (ent.name === '.git') continue;
-      const p = path.join(d, ent.name);
+/**
+ * 在目录下找第一个可列出的文件相对路径（BFS，跳过噪声目录）。
+ * @param {string} absDir
+ * @param {string} relDir - 相对 workdir 的路径前缀
+ * @param {Set<string>} deletedInner
+ * @returns {string | null} 相对 workdir 的路径（不含 relPrefix）
+ */
+function findFirstListableFile(absDir, relDir, deletedInner = new Set()) {
+  const queue = [{ abs: absDir, rel: relDir }];
+  while (queue.length) {
+    const { abs, rel } = queue.shift();
+    let ents;
+    try {
+      ents = fs.readdirSync(abs, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    ents.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+    for (const ent of ents) {
+      if (shouldSkipListingDirName(ent.name)) continue;
+      const p = path.join(abs, ent.name);
       const r = rel ? `${rel}/${ent.name}` : ent.name;
-      if (ent.isDirectory()) walk(p, r);
-      else {
-        // Check if this file is marked as deleted in git
-        if (deletedInner.has(normalizeRel(r))) continue;
-        const listed = relPrefix ? `${relPrefix}/${r}` : r;
-        files.push(listed);
+      if (ent.isDirectory()) {
+        queue.push({ abs: p, rel: r });
+        continue;
       }
-      if (files.length >= maxFiles) return;
+      if (deletedInner.has(normalizeRel(r))) continue;
+      return r;
     }
   }
+  return null;
+}
+
+function listedPath(relPrefix, rel) {
+  return relPrefix ? `${relPrefix}/${rel}` : rel;
+}
+
+/**
+ * 保证工作区顶层条目在 max_files 截断后仍可见：
+ * - 顶层文件直接加入
+ * - 顶层目录优先加入其下第一个可列出文件；若无文件则加入 `dirname/` 目录标记
+ * @returns {boolean} truncated
+ */
+function seedTopLevelListing(absBase, relPrefix, files, maxFiles, deletedInner = new Set()) {
+  let ents;
   try {
-    walk(absBase, '');
+    ents = fs.readdirSync(absBase, { withFileTypes: true });
+  } catch {
+    return false;
+  }
+  ents.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  const seen = new Set(files);
+  for (const ent of ents) {
+    if (files.length >= maxFiles) return true;
+    if (shouldSkipListingDirName(ent.name)) continue;
+    const p = path.join(absBase, ent.name);
+    if (ent.isDirectory()) {
+      const first = findFirstListableFile(p, ent.name, deletedInner);
+      if (first) {
+        const listed = listedPath(relPrefix, first);
+        if (!seen.has(listed)) {
+          files.push(listed);
+          seen.add(listed);
+        }
+      } else {
+        // 空目录或仅有被跳过内容：仍展示目录名
+        const listed = listedPath(relPrefix, `${ent.name}/`);
+        if (!seen.has(listed)) {
+          files.push(listed);
+          seen.add(listed);
+        }
+      }
+      continue;
+    }
+    const r = ent.name;
+    if (deletedInner.has(normalizeRel(r))) continue;
+    const listed = listedPath(relPrefix, r);
+    if (!seen.has(listed)) {
+      files.push(listed);
+      seen.add(listed);
+    }
+  }
+  return files.length >= maxFiles;
+}
+
+/**
+ * BFS 补齐更多文件路径（先浅后深），避免 DFS 深入早期目录占满额度。
+ * @returns {boolean} truncated
+ */
+function walkRepoRelativeFiles(absBase, relPrefix, files, maxFiles, deletedInner = new Set()) {
+  const seen = new Set(files);
+  const queue = [{ abs: absBase, rel: '' }];
+  let truncated = false;
+  try {
+    while (queue.length) {
+      if (files.length >= maxFiles) {
+        truncated = true;
+        break;
+      }
+      const { abs, rel } = queue.shift();
+      let ents;
+      try {
+        ents = fs.readdirSync(abs, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      ents.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+      for (const ent of ents) {
+        if (shouldSkipListingDirName(ent.name)) continue;
+        const p = path.join(abs, ent.name);
+        const r = rel ? `${rel}/${ent.name}` : ent.name;
+        if (ent.isDirectory()) {
+          queue.push({ abs: p, rel: r });
+          continue;
+        }
+        if (deletedInner.has(normalizeRel(r))) continue;
+        const listed = listedPath(relPrefix, r);
+        if (seen.has(listed)) continue;
+        files.push(listed);
+        seen.add(listed);
+        if (files.length >= maxFiles) {
+          truncated = true;
+          break;
+        }
+      }
+    }
+    if (queue.length) truncated = true;
   } catch {
     /* ignore */
   }
+  return truncated;
 }
 
 /**
  * 遍历层内（含多并列克隆仓）相对路径列表，供 GET /api/layers/:id/files 与单测使用。
+ * 策略：先为每个仓/工作区种子化顶层条目，再 BFS 补齐，并跳过 node_modules 等噪声目录，
+ * 避免大仓 DFS + max_files 截断导致「顶层目录不全」。
  * @param {string} layerId
  * @param {number} [maxFiles]
- * @returns {string[]}
+ * @returns {{ files: string[], truncated: boolean }}
  */
 export function listFlatRelativeFilesForLayer(layerId, maxFiles = 2000) {
   const cap = Math.max(1, Math.min(5000, Number(maxFiles) || 2000));
   const roots = layerGitWorkdirRootsForFileListing(layerId);
-  if (!roots.length) return [];
+  if (!roots.length) return { files: [], truncated: false };
   const files = [];
+  let truncated = false;
+  const rootStates = [];
   for (const { workdir, relPrefix } of roots) {
-    // Get deleted files for this workdir
     const { deleted: deletedInner } = gitStatusPathSets(workdir);
-    walkRepoRelativeFiles(workdir, relPrefix, files, cap, deletedInner);
-    if (files.length >= cap) break;
+    rootStates.push({ workdir, relPrefix, deletedInner });
   }
-  return files;
+  // Phase 1：所有仓先种子化顶层，保证多仓并列时后序仓不会被前序仓深文件挤掉
+  for (const { workdir, relPrefix, deletedInner } of rootStates) {
+    if (seedTopLevelListing(workdir, relPrefix, files, cap, deletedInner)) {
+      truncated = true;
+      break;
+    }
+  }
+  // Phase 2：BFS 补齐
+  if (!truncated) {
+    for (const { workdir, relPrefix, deletedInner } of rootStates) {
+      if (walkRepoRelativeFiles(workdir, relPrefix, files, cap, deletedInner)) {
+        truncated = true;
+        break;
+      }
+    }
+  }
+  return { files, truncated };
 }
 
 /**

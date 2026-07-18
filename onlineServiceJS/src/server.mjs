@@ -1106,8 +1106,8 @@ api.post('/layers/:layer_id/queue', (req, res) => {
 
 api.get('/layers/:layer_id/files', (req, res) => {
   const maxCap = Math.min(Math.max(1, parseInt(req.query.max_files || '2000', 10) || 2000), 5000);
-  const files = listFlatRelativeFilesForLayer(req.params.layer_id, maxCap);
-  res.json({ files });
+  const { files, truncated } = listFlatRelativeFilesForLayer(req.params.layer_id, maxCap);
+  res.json({ files, truncated: !!truncated, max_files: maxCap });
 });
 
 api.get('/layers/:layer_id/files/*', (req, res) => {

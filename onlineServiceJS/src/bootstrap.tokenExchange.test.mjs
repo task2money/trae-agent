@@ -9,7 +9,9 @@ import {
   clearPersistedRefreshToken,
   containerRefreshTokenStorePath,
   formatTokenExchangeFailureLog,
+  isExchangeRefreshFallbackEligibleError,
   isExchangeRefreshForbiddenError,
+  isExchangeRefreshInvalidAccessError,
   isPersistedRefreshTokenStoreError,
   readPersistedRefreshToken,
   writePersistedRefreshToken,
@@ -37,9 +39,44 @@ test('isExchangeRefreshForbiddenError detects exchange-refresh 403 hint', () => 
   assert.equal(isExchangeRefreshForbiddenError(err), true);
 });
 
+test('isExchangeRefreshForbiddenError detects TOKEN_EXCHANGE_ALREADY_DONE without refresh-access text', () => {
+  const err = new Error(
+    'HTTP 403 http://api.example/cloud/server-container-token/exchange-refresh/: {"detail":"预埋 AccessToken 仅可用于首次换取 RefreshToken","error_code":"TOKEN_EXCHANGE_ALREADY_DONE"}',
+  );
+  err.structuredPayload = {
+    detail: '预埋 AccessToken 仅可用于首次换取 RefreshToken',
+    error_code: 'TOKEN_EXCHANGE_ALREADY_DONE',
+  };
+  assert.equal(isExchangeRefreshForbiddenError(err), true);
+  assert.equal(isExchangeRefreshFallbackEligibleError(err), true);
+});
+
 test('isExchangeRefreshForbiddenError ignores unrelated 403', () => {
   const err = new Error('HTTP 403 http://api.example/forbidden/: {"detail":"forbidden"}');
   assert.equal(isExchangeRefreshForbiddenError(err), false);
+});
+
+test('isExchangeRefreshInvalidAccessError detects exchange-refresh 401 TOKEN_ACCESS_INVALID', () => {
+  const err = new Error(
+    'HTTP 401 http://api.example/cloud/server-container-token/exchange-refresh/: {"detail":"无效的 access_token","error_code":"TOKEN_ACCESS_INVALID"}',
+  );
+  err.structuredPayload = { detail: '无效的 access_token', error_code: 'TOKEN_ACCESS_INVALID' };
+  assert.equal(isExchangeRefreshInvalidAccessError(err), true);
+  assert.equal(isExchangeRefreshFallbackEligibleError(err), true);
+  assert.equal(isExchangeRefreshForbiddenError(err), false);
+});
+
+test('isExchangeRefreshInvalidAccessError ignores unrelated 401', () => {
+  const err = new Error('HTTP 401 http://api.example/other/: {"detail":"unauthorized"}');
+  assert.equal(isExchangeRefreshInvalidAccessError(err), false);
+  assert.equal(isExchangeRefreshFallbackEligibleError(err), false);
+});
+
+test('isExchangeRefreshFallbackEligibleError covers 403 already-exchanged', () => {
+  const err = new Error(
+    'HTTP 403 http://api.example/cloud/server-container-token/exchange-refresh/: {"detail":"请使用 server-container-token/refresh-access/ 接口","error_code":"TOKEN_EXCHANGE_ALREADY_DONE"}',
+  );
+  assert.equal(isExchangeRefreshFallbackEligibleError(err), true);
 });
 
 test('writePersistedRefreshToken / readPersistedRefreshToken round-trip under runtimeDir', () => {

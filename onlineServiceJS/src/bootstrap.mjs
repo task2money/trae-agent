@@ -1208,10 +1208,42 @@ export function clearPersistedRefreshToken() {
   }
 }
 
-/** exchange-refresh 返回 403：库中已有 refresh，须改走 refresh-access。 */
+/**
+ * exchange-refresh 返回 403：库中已有 refresh，须改走 refresh-access。
+ * 匹配 error_code / 中文 detail；兼容旧测例文案中的 refresh-access 提示。
+ */
 export function isExchangeRefreshForbiddenError(e) {
+  const code = String(e?.structuredPayload?.error_code || '').trim();
+  if (code === 'TOKEN_EXCHANGE_ALREADY_DONE') return true;
   const msg = String(e?.message || e || '');
-  return /HTTP\s+403\b/i.test(msg) && /refresh-access/i.test(msg);
+  if (!/HTTP\s+403\b/i.test(msg)) return false;
+  return (
+    /TOKEN_EXCHANGE_ALREADY_DONE/i.test(msg) ||
+    /仅可用于首次换取\s*RefreshToken/i.test(msg) ||
+    /refresh-access/i.test(msg)
+  );
+}
+
+/**
+ * exchange-refresh 返回 401：预埋/过期 access 已失效（常见于容器重启仍注入首次 ACCESS_TOKEN）。
+ * 若本地仍有 refresh_token，应与 403 一样回退 refresh-access，否则进程会带着无效 ACCESS_TOKEN 监听，
+ * 平台按 credential by-scope 转发时全线 401（Invalid or missing access token）。
+ */
+export function isExchangeRefreshInvalidAccessError(e) {
+  const code = String(e?.structuredPayload?.error_code || '').trim();
+  if (code === 'TOKEN_ACCESS_INVALID' || code === 'TOKEN_EXPIRED') return true;
+  const msg = String(e?.message || e || '');
+  if (!/HTTP\s+401\b/i.test(msg)) return false;
+  return (
+    /TOKEN_ACCESS_INVALID/i.test(msg) ||
+    /无效的 access_token/i.test(msg) ||
+    /TOKEN_EXPIRED/i.test(msg)
+  );
+}
+
+/** 可凭落盘 refresh_token 自愈的 exchange-refresh 错误（403 已换票 / 401 预埋 access 失效）。 */
+export function isExchangeRefreshFallbackEligibleError(e) {
+  return isExchangeRefreshForbiddenError(e) || isExchangeRefreshInvalidAccessError(e);
 }
 
 /**
@@ -1317,18 +1349,21 @@ export async function runBootstrapTokenExchangeOnly() {
         logTokenExchange(`exchange-refresh OK refresh_token ${summarizeSecret(refreshToken)}`);
         writePersistedRefreshToken({ refreshToken });
       } catch (e) {
-        if (!isExchangeRefreshForbiddenError(e)) {
+        if (!isExchangeRefreshFallbackEligibleError(e)) {
           throw e;
         }
+        const reason = isExchangeRefreshForbiddenError(e)
+          ? '403 already-exchanged'
+          : '401 invalid/expired access';
         refreshToken = readPersistedRefreshToken();
         if (!refreshToken) {
           logTokenExchange(
-            'exchange-refresh 403 and no persisted refresh_token; run env-prepare / 重新生成令牌 before start',
+            `exchange-refresh ${reason} and no persisted refresh_token; run env-prepare / 重新生成令牌 before start`,
           );
           throw e;
         }
         logTokenExchange(
-          'exchange-refresh 403: fallback to refresh-access using persisted refresh_token',
+          `exchange-refresh ${reason}: fallback to refresh-access using persisted refresh_token`,
         );
         const fb = await runRefreshAccessOnly(prefix, refreshToken, tokenTimeout);
         newAccess = fb.accessToken;

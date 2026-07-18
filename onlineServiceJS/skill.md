@@ -166,7 +166,7 @@ Dockerfile 基于 **ubuntu:24.04**（可通过构建参数 `BASE_IMAGE` / 环境
 |------|------|------|
 | `GET` | `/api/layers` | 列出可写层（**不含** `meta_kind=empty` 锚点）。每层含 `git_worktree_dirty` 与 `git_remote`（`is_git`/`ahead`/`no_upstream`/`upstream`/`current_branch`）。**网关转发**亦可使用 scoped 形态 `/api/tenant/{t}/workspace/{w}/task/{task}/layers`（入站 rewrite 到本路径；访问日志保留 scoped `originalUrl`）。 |
 | `GET` | `/api/layers/empty-root` | 返回空层锚点 `layer_id`。 |
-| `GET` | `/api/layers/{layer_id}/files` | 层内文件扁平列表（实现上有条数上限，默认与遍历深度以代码为准）。 |
+| `GET` | `/api/layers/{layer_id}/files` | 层内文件扁平列表。查询 `max_files`（1–5000）。响应 `{ files, truncated, max_files }`：先种子化全部顶层再 BFS 补齐，跳过 `node_modules` 等；空目录可为 `dirname/` 标记；触顶时 `truncated=true` 且顶层仍应可见。 |
 | `GET` | `/api/layers/{layer_id}/files/{file_rel_posix}` | 读取单文件；支持 `max_bytes` 等（见路由实现）。 |
 | `GET` | `/api/layers/{layer_id}/children` | 列目录子项；查询参数 `dir` 等。 |
 | `GET` | `/api/layers/{layer_id}/diff/parent` | **未提供**该路由（无目录树全文 diff）；变动请用 `diff/parent/files` 与 `diff/parent/file`。 |
