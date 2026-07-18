@@ -5,7 +5,13 @@ import {
   buildHttpAuthFromRepoCredential,
   buildRepoCloneCredentialsBootstrapError,
   buildTaskDetailBootstrapError,
+  bootstrapCloneLogFailurePayload,
+  clearLastBootstrapFailure,
   fetchBootstrapRepoInputs,
+  getLastBootstrapFailure,
+  isRepoCloneCredentialsIncompleteError,
+  noteBootstrapFailure,
+  repoCloneCredentialsRetryConfigFromEnv,
   resolveRepoCloneCredential,
 } from './bootstrap.mjs';
 
@@ -245,4 +251,187 @@ test('fetchBootstrapRepoInputs skips repo-clone-credentials call when no repo ur
   } finally {
     global.fetch = originalFetch;
   }
+});
+
+test('isRepoCloneCredentialsIncompleteError detects 409 structured payload', () => {
+  const err = new Error('HTTP 409 http://api/x: {"error_code":"REPO_CLONE_CREDENTIALS_INCOMPLETE"}');
+  err.structuredPayload = {
+    error_code: 'REPO_CLONE_CREDENTIALS_INCOMPLETE',
+    missing_repo_credentials: ['https://github.com/org/a.git'],
+  };
+  assert.equal(isRepoCloneCredentialsIncompleteError(err), true);
+  assert.equal(isRepoCloneCredentialsIncompleteError(new Error('HTTP 500 boom')), false);
+});
+
+test('repoCloneCredentialsRetryConfigFromEnv clamps retries and backoff', () => {
+  const prevR = process.env.TASK_API_REPO_CLONE_CREDENTIALS_RETRIES;
+  const prevB = process.env.TASK_API_REPO_CLONE_CREDENTIALS_BACKOFF_MS;
+  try {
+    process.env.TASK_API_REPO_CLONE_CREDENTIALS_RETRIES = '99';
+    process.env.TASK_API_REPO_CLONE_CREDENTIALS_BACKOFF_MS = '1';
+    const cfg = repoCloneCredentialsRetryConfigFromEnv();
+    assert.equal(cfg.maxAttempts, 30);
+    assert.equal(cfg.backoffMs, 1);
+  } finally {
+    if (prevR === undefined) delete process.env.TASK_API_REPO_CLONE_CREDENTIALS_RETRIES;
+    else process.env.TASK_API_REPO_CLONE_CREDENTIALS_RETRIES = prevR;
+    if (prevB === undefined) delete process.env.TASK_API_REPO_CLONE_CREDENTIALS_BACKOFF_MS;
+    else process.env.TASK_API_REPO_CLONE_CREDENTIALS_BACKOFF_MS = prevB;
+  }
+});
+
+test('fetchBootstrapRepoInputs retries REPO_CLONE_CREDENTIALS_INCOMPLETE then succeeds', async () => {
+  const originalFetch = global.fetch;
+  const prevR = process.env.TASK_API_REPO_CLONE_CREDENTIALS_RETRIES;
+  const prevB = process.env.TASK_API_REPO_CLONE_CREDENTIALS_BACKOFF_MS;
+  const prevStagger = process.env.TASK_API_BOOTSTRAP_SAAS_STAGGER_MS;
+  process.env.TASK_API_REPO_CLONE_CREDENTIALS_RETRIES = '4';
+  process.env.TASK_API_REPO_CLONE_CREDENTIALS_BACKOFF_MS = '0';
+  process.env.TASK_API_BOOTSTRAP_SAAS_STAGGER_MS = '0';
+  let credCalls = 0;
+  global.fetch = async (url) => {
+    if (String(url).endsWith('/server-container-token/task-detail/')) {
+      return {
+        ok: true,
+        status: 200,
+        text: async () =>
+          JSON.stringify({
+            project_repos: [{ git_repos: ['http://localhost:8012/demo/repo-a.git'] }],
+          }),
+        headers: new Map(),
+      };
+    }
+    credCalls += 1;
+    if (credCalls < 3) {
+      return {
+        ok: false,
+        status: 409,
+        text: async () =>
+          JSON.stringify({
+            error_code: 'REPO_CLONE_CREDENTIALS_INCOMPLETE',
+            detail: 'repo clone credentials incomplete',
+            missing_repo_credentials: ['http://localhost:8012/demo/repo-a.git'],
+          }),
+        headers: new Map(),
+      };
+    }
+    return {
+      ok: true,
+      status: 200,
+      text: async () =>
+        JSON.stringify({
+          repo_clone_credentials: {
+            'http://localhost:8012/demo/repo-a.git': {
+              ephemeral_oauth_access_token: 'token-after-bind',
+            },
+          },
+        }),
+      headers: new Map(),
+    };
+  };
+  try {
+    const got = await fetchBootstrapRepoInputs('http://api.example.com', 'access-token', 5);
+    assert.equal(credCalls, 3);
+    assert.equal(
+      got.credRoot['http://localhost:8012/demo/repo-a.git'].ephemeral_oauth_access_token,
+      'token-after-bind',
+    );
+  } finally {
+    global.fetch = originalFetch;
+    if (prevR === undefined) delete process.env.TASK_API_REPO_CLONE_CREDENTIALS_RETRIES;
+    else process.env.TASK_API_REPO_CLONE_CREDENTIALS_RETRIES = prevR;
+    if (prevB === undefined) delete process.env.TASK_API_REPO_CLONE_CREDENTIALS_BACKOFF_MS;
+    else process.env.TASK_API_REPO_CLONE_CREDENTIALS_BACKOFF_MS = prevB;
+    if (prevStagger === undefined) delete process.env.TASK_API_BOOTSTRAP_SAAS_STAGGER_MS;
+    else process.env.TASK_API_BOOTSTRAP_SAAS_STAGGER_MS = prevStagger;
+  }
+});
+
+test('fetchBootstrapRepoInputs exhausts incomplete-credential retries then throws', async () => {
+  const originalFetch = global.fetch;
+  const prevR = process.env.TASK_API_REPO_CLONE_CREDENTIALS_RETRIES;
+  const prevB = process.env.TASK_API_REPO_CLONE_CREDENTIALS_BACKOFF_MS;
+  const prevStagger = process.env.TASK_API_BOOTSTRAP_SAAS_STAGGER_MS;
+  process.env.TASK_API_REPO_CLONE_CREDENTIALS_RETRIES = '2';
+  process.env.TASK_API_REPO_CLONE_CREDENTIALS_BACKOFF_MS = '0';
+  process.env.TASK_API_BOOTSTRAP_SAAS_STAGGER_MS = '0';
+  let credCalls = 0;
+  global.fetch = async (url) => {
+    if (String(url).endsWith('/server-container-token/task-detail/')) {
+      return {
+        ok: true,
+        status: 200,
+        text: async () =>
+          JSON.stringify({
+            project_repos: [{ git_repos: ['http://localhost:8012/demo/repo-a.git'] }],
+          }),
+        headers: new Map(),
+      };
+    }
+    credCalls += 1;
+    return {
+      ok: false,
+      status: 409,
+      text: async () =>
+        JSON.stringify({
+          error_code: 'REPO_CLONE_CREDENTIALS_INCOMPLETE',
+          detail: 'repo clone credentials incomplete',
+          missing_repo_credentials: ['http://localhost:8012/demo/repo-a.git'],
+        }),
+      headers: new Map(),
+    };
+  };
+  try {
+    await assert.rejects(
+      () => fetchBootstrapRepoInputs('http://api.example.com', 'access-token', 5),
+      (err) => {
+        assert.match(String(err?.message || err), /HTTP\s+409|REPO_CLONE_CREDENTIALS_INCOMPLETE/);
+        return true;
+      },
+    );
+    assert.equal(credCalls, 2);
+  } finally {
+    global.fetch = originalFetch;
+    if (prevR === undefined) delete process.env.TASK_API_REPO_CLONE_CREDENTIALS_RETRIES;
+    else process.env.TASK_API_REPO_CLONE_CREDENTIALS_RETRIES = prevR;
+    if (prevB === undefined) delete process.env.TASK_API_REPO_CLONE_CREDENTIALS_BACKOFF_MS;
+    else process.env.TASK_API_REPO_CLONE_CREDENTIALS_BACKOFF_MS = prevB;
+    if (prevStagger === undefined) delete process.env.TASK_API_BOOTSTRAP_SAAS_STAGGER_MS;
+    else process.env.TASK_API_BOOTSTRAP_SAAS_STAGGER_MS = prevStagger;
+  }
+});
+
+test('noteBootstrapFailure / getLastBootstrapFailure round-trip for API surface', () => {
+  clearLastBootstrapFailure();
+  assert.equal(getLastBootstrapFailure(), null);
+  noteBootstrapFailure({
+    phase: 'task_detail_or_credentials',
+    code: 'REPO_CLONE_CREDENTIALS_INCOMPLETE',
+    message: '凭证未齐',
+  });
+  const got = getLastBootstrapFailure();
+  assert.equal(got.phase, 'task_detail_or_credentials');
+  assert.equal(got.code, 'REPO_CLONE_CREDENTIALS_INCOMPLETE');
+  assert.match(got.message, /凭证未齐/);
+  assert.ok(got.at);
+  clearLastBootstrapFailure();
+  assert.equal(getLastBootstrapFailure(), null);
+});
+
+test('bootstrapCloneLogFailurePayload exposes readable text for empty-layer UI', () => {
+  clearLastBootstrapFailure();
+  assert.equal(bootstrapCloneLogFailurePayload(), null);
+  noteBootstrapFailure({
+    phase: 'task_detail_or_credentials',
+    code: 'REPO_CLONE_CREDENTIALS_INCOMPLETE',
+    message: '请绑定 Git 授权',
+    missing_repo_credentials: ['https://github.com/org/a.git'],
+  });
+  const payload = bootstrapCloneLogFailurePayload();
+  assert.ok(payload);
+  assert.match(payload.text, /引导失败/);
+  assert.match(payload.text, /请绑定 Git 授权/);
+  assert.match(payload.text, /github.com\/org\/a\.git/);
+  assert.equal(payload.error_code, 'REPO_CLONE_CREDENTIALS_INCOMPLETE');
+  clearLastBootstrapFailure();
 });

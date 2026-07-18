@@ -35,6 +35,7 @@ import {
   fetchRepoCloneCredentialsOnly,
   lastBootstrapTaskDetail,
   collectRepoCloneJobs,
+  bootstrapCloneLogFailurePayload,
 } from './bootstrap.mjs';
 import { maybeStartAutoRunFirstInstruction } from './autoRunOrchestration.mjs';
 import {
@@ -800,6 +801,19 @@ api.get('/repos/bootstrap-clone-log', (req, res) => {
   const payload = { layer_id: lid, text };
   if (segments && segments.length) {
     payload.segments = segments;
+  }
+  // 凭证未齐等导致从未进入 clone 时 layer 为空；仍返回可读失败摘要，避免 UI/8888 侧「静默空 /app」。
+  if (!String(text || '').trim()) {
+    const fail = bootstrapCloneLogFailurePayload();
+    if (fail) {
+      payload.text = fail.text;
+      if (fail.error_code) payload.error_code = fail.error_code;
+      if (fail.phase) payload.phase = fail.phase;
+      if (fail.at) payload.failed_at = fail.at;
+      if (fail.missing_repo_credentials?.length) {
+        payload.missing_repo_credentials = fail.missing_repo_credentials;
+      }
+    }
   }
   res.json(payload);
 });

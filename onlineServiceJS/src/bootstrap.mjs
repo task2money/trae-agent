@@ -54,6 +54,15 @@ export let bootstrapRegisterCloneJob = false;
 export let startupEmptyLayerId = null;
 /** 最近一次 bootstrap 拉取的 task-detail（供 auto_run 首指令/交付） */
 export let lastBootstrapTaskDetail = null;
+/**
+ * 最近一次 bootstrap 失败摘要（供 GET bootstrap-clone-log 在尚未产生 layer 时返回可读原因）。
+ * @type {{ phase: string, code: string, message: string, at: string, missing_repo_credentials?: string[] } | null}
+ */
+let lastBootstrapFailure = null;
+/** @type {ReturnType<typeof setTimeout> | null} */
+let bootstrapCredentialsRecoveryTimer = null;
+let bootstrapCredentialsRecoveryRunning = false;
+let bootstrapCredentialsRecoveryRounds = 0;
 
 /**
  * 多仓引导克隆期间：各仓 stderr 并行写入此结构，GET /api/repos/bootstrap-clone-log 再拼成 text 并返回 segments。
@@ -1024,6 +1033,244 @@ export function buildTaskDetailBootstrapError(errLike) {
   return buildRepoCloneCredentialsBootstrapError(errLike);
 }
 
+/** 是否为「仓库 Git 授权未齐」类 409（可退避重试，常见于容器启动早于用户绑定）。 */
+export function isRepoCloneCredentialsIncompleteError(errLike) {
+  const payload = bootstrapStructuredPayload(errLike);
+  if (String(payload?.error_code || '').trim() === 'REPO_CLONE_CREDENTIALS_INCOMPLETE') {
+    return true;
+  }
+  const msg = String(errLike?.message || errLike || '');
+  return /HTTP\s+409\b/i.test(msg) && /REPO_CLONE_CREDENTIALS_INCOMPLETE/i.test(msg);
+}
+
+/**
+ * repo-clone-credentials 409 重试配置。
+ * - TASK_API_REPO_CLONE_CREDENTIALS_RETRIES：含首轮，默认 8，上限 30
+ * - TASK_API_REPO_CLONE_CREDENTIALS_BACKOFF_MS：基数毫秒，默认 5000；实际等待 = min(120s, backoff*attempt)
+ */
+export function repoCloneCredentialsRetryConfigFromEnv() {
+  const retriesRaw = parseInt(String(process.env.TASK_API_REPO_CLONE_CREDENTIALS_RETRIES || '8'), 10);
+  const backoffRaw = parseInt(
+    String(process.env.TASK_API_REPO_CLONE_CREDENTIALS_BACKOFF_MS || '5000'),
+    10,
+  );
+  const maxAttempts = Number.isFinite(retriesRaw) ? Math.max(1, Math.min(30, retriesRaw)) : 8;
+  const backoffMs = Number.isFinite(backoffRaw) ? Math.max(0, Math.min(120000, backoffRaw)) : 5000;
+  return { maxAttempts, backoffMs };
+}
+
+export function getLastBootstrapFailure() {
+  return lastBootstrapFailure;
+}
+
+export function clearLastBootstrapFailure() {
+  lastBootstrapFailure = null;
+}
+
+/**
+ * @param {{ phase: string, code?: string, message: string, missing_repo_credentials?: string[] }} failure
+ */
+export function noteBootstrapFailure(failure) {
+  const phase = String(failure?.phase || 'unknown').trim() || 'unknown';
+  const message = String(failure?.message || '').trim() || 'bootstrap failed';
+  const code = String(failure?.code || '').trim();
+  const missing = Array.isArray(failure?.missing_repo_credentials)
+    ? failure.missing_repo_credentials.map((u) => String(u || '').trim()).filter(Boolean)
+    : [];
+  lastBootstrapFailure = {
+    phase,
+    code,
+    message,
+    at: new Date().toISOString(),
+    ...(missing.length ? { missing_repo_credentials: missing } : {}),
+  };
+  appendOutboundReqLog(
+    `bootstrap failure recorded phase=${phase} code=${code || '-'} msg=${message.slice(0, 240)}`,
+  );
+}
+
+/** 供 GET /api/repos/bootstrap-clone-log：无 layer 日志时仍返回失败摘要。 */
+export function bootstrapCloneLogFailurePayload() {
+  const f = lastBootstrapFailure;
+  if (!f) return null;
+  const lines = [
+    `【项目克隆】引导失败（phase=${f.phase}${f.code ? ` code=${f.code}` : ''}）。`,
+    f.message,
+  ];
+  if (Array.isArray(f.missing_repo_credentials) && f.missing_repo_credentials.length) {
+    lines.push(`缺失凭证仓库（${f.missing_repo_credentials.length}）：`);
+    for (const u of f.missing_repo_credentials.slice(0, 20)) {
+      lines.push(`- ${u}`);
+    }
+  }
+  if (f.at) lines.push(`记录时间：${f.at}`);
+  return {
+    text: `${lines.join('\n')}\n`,
+    error_code: f.code || undefined,
+    phase: f.phase,
+    at: f.at,
+    missing_repo_credentials: f.missing_repo_credentials,
+  };
+}
+
+function stopBootstrapCredentialsRecovery() {
+  if (bootstrapCredentialsRecoveryTimer) {
+    clearTimeout(bootstrapCredentialsRecoveryTimer);
+    bootstrapCredentialsRecoveryTimer = null;
+  }
+  bootstrapCredentialsRecoveryRunning = false;
+  bootstrapCredentialsRecoveryRounds = 0;
+}
+
+function bootstrapCredentialsRecoveryConfigFromEnv() {
+  const intervalRaw = parseInt(
+    String(process.env.TASK_API_REPO_CLONE_CREDENTIALS_RECOVERY_INTERVAL_MS || '60000'),
+    10,
+  );
+  const roundsRaw = parseInt(
+    String(process.env.TASK_API_REPO_CLONE_CREDENTIALS_RECOVERY_ROUNDS || '20'),
+    10,
+  );
+  const intervalMs = Number.isFinite(intervalRaw)
+    ? Math.max(1000, Math.min(600000, intervalRaw))
+    : 60000;
+  const maxRounds = Number.isFinite(roundsRaw) ? Math.max(0, Math.min(120, roundsRaw)) : 20;
+  return { intervalMs, maxRounds };
+}
+
+/**
+ * 启动后凭证仍未齐时，周期性再试「详情→凭证→克隆→feature-params」，避免永久空 /app。
+ * @param {{ prefix: string, newAccess: string, timeout?: number }} ctx
+ */
+export function scheduleBootstrapCredentialsRecovery(ctx) {
+  stopBootstrapCredentialsRecovery();
+  if (!ctx || ctx.skipped || !ctx.prefix || !ctx.newAccess) return;
+  const { intervalMs, maxRounds } = bootstrapCredentialsRecoveryConfigFromEnv();
+  if (maxRounds <= 0) return;
+  console.log(
+    `[onlineServiceJS] 已调度 repo-clone-credentials 恢复轮询（间隔 ${intervalMs}ms，最多 ${maxRounds} 轮）`,
+  );
+  appendOutboundReqLog(
+    `bootstrap: schedule credentials recovery interval_ms=${intervalMs} max_rounds=${maxRounds}`,
+  );
+
+  const tick = async () => {
+    bootstrapCredentialsRecoveryTimer = null;
+    if (bootstrapCredentialsRecoveryRunning) {
+      bootstrapCredentialsRecoveryTimer = setTimeout(tick, intervalMs);
+      return;
+    }
+    if (bootstrapCloneLayerId && !lastBootstrapFailure) {
+      stopBootstrapCredentialsRecovery();
+      return;
+    }
+    if (bootstrapCredentialsRecoveryRounds >= maxRounds) {
+      console.warn(
+        `[onlineServiceJS] repo-clone-credentials 恢复轮询已达上限 ${maxRounds}，停止自动重试`,
+      );
+      appendOutboundReqLog(`bootstrap: credentials recovery exhausted rounds=${maxRounds}`);
+      stopBootstrapCredentialsRecovery();
+      return;
+    }
+    bootstrapCredentialsRecoveryRounds += 1;
+    bootstrapCredentialsRecoveryRunning = true;
+    const round = bootstrapCredentialsRecoveryRounds;
+    try {
+      console.log(
+        `[onlineServiceJS] BOOTSTRAP_PHASE=credentials_recovery_begin round=${round}/${maxRounds}`,
+      );
+      appendOutboundReqLog(`bootstrap: credentials recovery round=${round}/${maxRounds}`);
+      await runBootstrapAfterListen({
+        prefix: ctx.prefix,
+        newAccess: ctx.newAccess,
+        timeout: ctx.timeout,
+        skipped: false,
+        _fromCredentialsRecovery: true,
+      });
+      console.log(
+        `[onlineServiceJS] BOOTSTRAP_PHASE=credentials_recovery_ok round=${round} layer=${bootstrapCloneLayerId || ''}`,
+      );
+      if (bootstrapCloneLayerId && bootstrapRegisterCloneJob) {
+        try {
+          const { registerBootstrapCloneJob } = await import('./jobsRuntime.mjs');
+          registerBootstrapCloneJob(bootstrapCloneLayerId);
+        } catch (regErr) {
+          console.error(
+            `[onlineServiceJS] credentials recovery: registerBootstrapCloneJob failed: ${String(regErr?.message || regErr).slice(0, 300)}`,
+          );
+        }
+      }
+      stopBootstrapCredentialsRecovery();
+    } catch (e) {
+      const msg = String(e?.message || e || '').slice(0, 400);
+      console.warn(
+        `[onlineServiceJS] credentials recovery round=${round} still failing: ${msg}`,
+      );
+      appendOutboundReqLog(`bootstrap: credentials recovery round=${round} fail ${msg}`);
+      if (!isRepoCloneCredentialsIncompleteError(e)) {
+        // 非凭证类错误：保留失败摘要，但继续有限次重试（网络抖动等）
+      }
+      bootstrapCredentialsRecoveryTimer = setTimeout(tick, intervalMs);
+    } finally {
+      bootstrapCredentialsRecoveryRunning = false;
+    }
+  };
+
+  bootstrapCredentialsRecoveryTimer = setTimeout(tick, intervalMs);
+}
+
+async function postRepoCloneCredentialsWithRetry(prefix, accessToken, timeoutSec) {
+  const { maxAttempts, backoffMs } = repoCloneCredentialsRetryConfigFromEnv();
+  let lastErr = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      if (attempt > 1) {
+        console.log(
+          `[onlineServiceJS] 重试拉取仓库克隆凭证（${attempt}/${maxAttempts}）…`,
+        );
+        appendOutboundReqLog(
+          `bootstrap: repo-clone-credentials retry attempt=${attempt}/${maxAttempts}`,
+        );
+      } else {
+        appendOutboundReqLog('bootstrap post-listen: repo-clone-credentials');
+        console.log('[onlineServiceJS] 开始拉取仓库克隆凭证…');
+      }
+      await staggerBootstrapSaasCall();
+      return await postJson(
+        `${prefix}/server-container-token/repo-clone-credentials/`,
+        { access_token: accessToken },
+        timeoutSec,
+      );
+    } catch (e) {
+      lastErr = e;
+      if (!isRepoCloneCredentialsIncompleteError(e) || attempt >= maxAttempts) {
+        throw e;
+      }
+      const payload = bootstrapStructuredPayload(e);
+      const missing = summarizeMissingRepoCredentials(payload);
+      const waitMs = Math.min(120000, backoffMs * attempt);
+      console.warn(
+        `[onlineServiceJS] REPO_CLONE_CREDENTIALS_INCOMPLETE attempt=${attempt}/${maxAttempts} wait_ms=${waitMs}` +
+          (missing.length ? ` missing=${missing.slice(0, 5).join(',')}` : ''),
+      );
+      appendOutboundReqLog(
+        `bootstrap: repo-clone-credentials incomplete attempt=${attempt}/${maxAttempts} wait_ms=${waitMs}` +
+          (missing.length ? ` missing=${missing.slice(0, 5).join(',')}` : ''),
+      );
+      noteBootstrapFailure({
+        phase: 'task_detail_or_credentials',
+        code: 'REPO_CLONE_CREDENTIALS_INCOMPLETE',
+        message: String(
+          buildRepoCloneCredentialsBootstrapError(e)?.message || e?.message || e,
+        ).slice(0, 800),
+        missing_repo_credentials: missing,
+      });
+      if (waitMs > 0) await sleepMs(waitMs);
+    }
+  }
+  throw lastErr || new Error('repo-clone-credentials failed');
+}
+
 export async function fetchBootstrapRepoInputs(prefix, accessToken, timeoutSec) {
   const detail = await postJson(
     `${prefix}/server-container-token/task-detail/`,
@@ -1039,14 +1286,7 @@ export async function fetchBootstrapRepoInputs(prefix, accessToken, timeoutSec) 
   if (!urls.length) {
     return { urls, cloneJobs, credRoot: {}, detail, branchPlans };
   }
-  await staggerBootstrapSaasCall();
-  appendOutboundReqLog('bootstrap post-listen: repo-clone-credentials');
-  console.log('[onlineServiceJS] 开始拉取仓库克隆凭证…');
-  const credResp = await postJson(
-    `${prefix}/server-container-token/repo-clone-credentials/`,
-    { access_token: accessToken },
-    timeoutSec
-  );
+  const credResp = await postRepoCloneCredentialsWithRetry(prefix, accessToken, timeoutSec);
   const credRoot =
     credResp && typeof credResp.repo_clone_credentials === 'object'
       ? credResp.repo_clone_credentials
@@ -1488,6 +1728,7 @@ export async function runBootstrapAfterListen(ctx) {
     return;
   }
   const { prefix, newAccess, timeout } = ctx;
+  const fromRecovery = Boolean(ctx._fromCredentialsRecovery);
   const timeoutSec = timeout;
 
   // 稳定标记供前端启动日志检索；勿改前缀，面板会高亮 BOOTSTRAP_* 行。
@@ -1509,13 +1750,25 @@ export async function runBootstrapAfterListen(ctx) {
     const wrapped =
       String(e?.message || '').includes('/server-container-token/repo-clone-credentials/')
       || String(e?.message || '').includes('REPO_CLONE_CREDENTIALS_INCOMPLETE')
+      || isRepoCloneCredentialsIncompleteError(e)
         ? buildRepoCloneCredentialsBootstrapError(e)
         : e instanceof Error
           ? e
           : new Error(String(e || 'task-detail failed'));
+    const payload = bootstrapStructuredPayload(wrapped) || bootstrapStructuredPayload(e);
+    noteBootstrapFailure({
+      phase: 'task_detail_or_credentials',
+      code: String(payload?.error_code || '').trim() ||
+        (isRepoCloneCredentialsIncompleteError(e) ? 'REPO_CLONE_CREDENTIALS_INCOMPLETE' : ''),
+      message: String(wrapped?.message || wrapped).slice(0, 800),
+      missing_repo_credentials: summarizeMissingRepoCredentials(payload),
+    });
     console.error(
       `[onlineServiceJS] BOOTSTRAP_FAILED phase=task_detail_or_credentials ${String(wrapped?.message || wrapped).slice(0, 500)}`,
     );
+    if (!fromRecovery && isRepoCloneCredentialsIncompleteError(e)) {
+      scheduleBootstrapCredentialsRecovery({ prefix, newAccess, timeout, skipped: false });
+    }
     throw wrapped;
   }
   if (urls.length) {
@@ -1529,6 +1782,11 @@ export async function runBootstrapAfterListen(ctx) {
         branchPlans,
       );
     } catch (e) {
+      noteBootstrapFailure({
+        phase: 'clone',
+        code: '',
+        message: String(e?.message || e).slice(0, 800),
+      });
       console.error(
         `[onlineServiceJS] BOOTSTRAP_FAILED phase=clone ${String(e?.message || e).slice(0, 500)}`,
       );
@@ -1552,12 +1810,21 @@ export async function runBootstrapAfterListen(ctx) {
       timeoutSec
     );
   } catch (e) {
+    noteBootstrapFailure({
+      phase: 'feature_params_env',
+      code: '',
+      message: String(e?.message || e).slice(0, 800),
+    });
     console.error(
       `[onlineServiceJS] BOOTSTRAP_FAILED phase=feature_params_env ${String(e?.message || e).slice(0, 500)}`,
     );
     throw e;
   }
   persistFeatureParamsEnv(y.env);
+  clearLastBootstrapFailure();
+  if (fromRecovery) {
+    stopBootstrapCredentialsRecovery();
+  }
   console.log(
     '[onlineServiceJS] BOOTSTRAP_COMPLETE 任务引导完成（详情已拉取、克隆与配置已就绪）。',
   );
