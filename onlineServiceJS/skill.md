@@ -184,7 +184,7 @@ Dockerfile 基于 **ubuntu:24.04**（可通过构建参数 `BASE_IMAGE` / 环境
 | `GET` | `/api/layers/empty-root` | 返回空层锚点 `layer_id`。 |
 | `GET` | `/api/layers/{layer_id}/files` | 层内文件扁平列表。查询 `max_files`（1–5000）。响应 `{ files, truncated, max_files }`：先种子化全部顶层再 BFS 补齐，跳过 `node_modules` 等；空目录可为 `dirname/` 标记；触顶时 `truncated=true` 且顶层仍应可见。 |
 | `GET` | `/api/layers/{layer_id}/files/{file_rel_posix}` | 读取单文件；支持 `max_bytes` 等（见路由实现）。 |
-| `GET` | `/api/layers/{layer_id}/children` | 列目录子项；查询参数 `dir` 等。 |
+| `GET` | `/api/layers/{layer_id}/children` | 列目录子项；查询 `dir`/`prefix`/`offset`/`limit`。路径语义与扁平文件列表一致：子目录/多仓并列时带仓库 `relPrefix`（实现见 `layerChildren.mjs`）。 |
 | `GET` | `/api/layers/{layer_id}/diff/parent` | **未提供**该路由（无目录树全文 diff）；变动请用 `diff/parent/files` 与 `diff/parent/file`。 |
 | `GET` | `/api/layers/{layer_id}/diff/parent/files` | 相对父层工作目录的条目对比列表（`added`/`removed`/`modified`），见 `layerParentDiff.mjs`；无父层时 `detail` 说明。可选查询 `offset`/`limit`（limit 上限 500）分页，响应含 `change_count`/`next_offset`/`has_more`；未传 `limit` 时仍返回全量。 |
 | `GET` | `/api/layers/{layer_id}/diff/parent/file` | 查询参数 **`path`**：单路径文本 diff（或二进制提示）；无父层 **400**。 |
@@ -291,7 +291,7 @@ Dockerfile 基于 **ubuntu:24.04**（可通过构建参数 `BASE_IMAGE` / 环境
 | `POST` | `/api/layers/{layer_id}/git/commit` | JSON：`message`（可选）；「提交」。 |
 | `POST` | `/api/layers/{layer_id}/git/push` | 「推送」；可带 `ephemeral_ssh_private_key`。 |
 | `POST` | `/api/layers/{layer_id}/git/merge` | 「合并到目标分支」；body 含 `target_branch`，可选 `source_ref`。 |
-| `GET` | `/api/layers/{layer_id}/children` | 层内文件树分页。 |
+| `GET` | `/api/layers/{layer_id}/children` | 层内文件树分页（路径带多仓 `relPrefix`，见 `layerChildren.mjs`）。 |
 | `GET` | `/api/layers/{layer_id}/files/{file_rel_posix}` | 读取选中文件内容。 |
 
 未在 `index.html` 中直连的接口（如 `GET /api/layers/{layer_id}/files` 仅前缀列表、`GET /api/jobs/{job_id}/events`、`GET /api/layers/{layer_id}/git/branches` 等）**部分路由未实现**；本服务无 `/docs`、`/openapi.json`。

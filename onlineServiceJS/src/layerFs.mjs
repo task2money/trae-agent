@@ -83,7 +83,8 @@ const SKIP_LISTING_DIR_NAMES = new Set([
   'coverage',
 ]);
 
-function shouldSkipListingDirName(name) {
+/** 扁平文件列表 / 父层 diff 索引扫描共用：跳过 node_modules 等噪声目录名 */
+export function shouldSkipListingDirName(name) {
   const n = String(name || '');
   if (!n || SKIP_LISTING_DIR_NAMES.has(n)) return true;
   // 本地/工具虚拟环境：.venv-archimate 等
@@ -432,14 +433,31 @@ export function listFlatRelativeFilesForLayer(layerId, maxFiles = 2000) {
 }
 
 /**
+ * 规范化 files/* 路径：解码 URI，并把误编码的 %2F 还原为路径分隔符。
+ * @param {string} rel
+ * @returns {string}
+ */
+function normalizeListedFileRel(rel) {
+  let s = String(rel || '');
+  try {
+    s = decodeURIComponent(s);
+  } catch {
+    /* keep raw */
+  }
+  s = s.replace(/%2F/gi, '/');
+  return s.replace(/\\/g, '/').replace(/^\/+/, '');
+}
+
+/**
  * 将 ``GET /api/layers/:id/files`` 返回的相对路径解析为绝对路径，与 {@link listFlatRelativeFilesForLayer} 一致。
  * 克隆在子目录时列表为「仓库目录名/…」，而 {@link layerPrimaryGitWorkdir} 已落在该子目录内，若再拼接整段 ``rel`` 会得到 ``…/goPractice/goPractice/README.md`` 并 404。
+ * 另兼容历史 children API 相对 primary 工作区、无仓库前缀的路径。
  * @param {string} layerId
  * @param {string} rel - 与列表 API 相同，用 / 分隔
  * @returns {string | null}
  */
 export function resolveAbsolutePathForLayerListedFile(layerId, rel) {
-  const relNorm = String(rel || '').replace(/\\/g, '/').replace(/^\/+/, '');
+  const relNorm = normalizeListedFileRel(rel);
   if (!relNorm) return null;
   const parts = relNorm.split('/').filter((p) => p.length);
   if (!parts.length || parts.some((p) => p === '.' || p === '..')) return null;
@@ -461,6 +479,24 @@ export function resolveAbsolutePathForLayerListedFile(layerId, rel) {
         const candidate = path.resolve(path.join(workdir, ...parts));
         if (candidate !== wResolved && !candidate.startsWith(wResolved + path.sep)) continue;
         if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) return candidate;
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+
+  // 兼容：旧 children 相对 layerPrimaryGitWorkdir 返回无前缀路径
+  const primary = layerPrimaryGitWorkdir(layerId);
+  if (primary) {
+    try {
+      const wResolved = path.resolve(primary);
+      const candidate = path.resolve(path.join(primary, ...parts));
+      if (
+        (candidate === wResolved || candidate.startsWith(wResolved + path.sep)) &&
+        fs.existsSync(candidate) &&
+        fs.statSync(candidate).isFile()
+      ) {
+        return candidate;
       }
     } catch {
       /* ignore */

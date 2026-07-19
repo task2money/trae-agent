@@ -9,58 +9,21 @@ import {
   layerGitWorkdirRootsForFileListing,
 } from './layerFs.mjs';
 import { gitCmd } from './gitCmd.mjs';
+import { collectIndex, isGitInternalPath } from './layerParentDiffCollect.mjs';
+import {
+  applyLayerParentDiffPagination,
+  diffCacheGet,
+  diffCacheSet,
+} from './layerParentDiffPage.mjs';
 
-const MAX_DIFF_ENTRIES = 4000;
+export { applyLayerParentDiffPagination };
+
 const MAX_FILE_BYTES_FULL_COMPARE = 25 * 1024 * 1024;
-/** 变动列表分页：未传 limit 时返回全量（兼容管理页）；传入时按页切片 */
-const MAX_DIFF_PAGE_LIMIT = 500;
-
-/**
- * @param {object} payload
- * @param {{ offset?: number|string|null, limit?: number|string|null }} [opts]
- */
-export function applyLayerParentDiffPagination(payload, opts = {}) {
-  const base = payload && typeof payload === 'object' ? payload : {};
-  const all = Array.isArray(base.changes) ? base.changes : [];
-  const total = all.length;
-  let offset = Math.floor(Number(opts.offset));
-  if (!Number.isFinite(offset) || offset < 0) offset = 0;
-  const limRaw = opts.limit;
-  const limitProvided = limRaw != null && String(limRaw).trim() !== '';
-  let limit = null;
-  if (limitProvided) {
-    limit = Math.floor(Number(limRaw));
-    if (!Number.isFinite(limit) || limit < 1) limit = 1;
-    if (limit > MAX_DIFF_PAGE_LIMIT) limit = MAX_DIFF_PAGE_LIMIT;
-  }
-  const page = limit == null ? all : all.slice(offset, offset + limit);
-  const nextOffset = offset + page.length;
-  const hasMore = limit == null ? false : nextOffset < total;
-  return {
-    ...base,
-    changes: page,
-    change_count: total,
-    offset,
-    next_offset: nextOffset,
-    has_more: hasMore,
-    truncated: Boolean(base.truncated),
-  };
-}
 
 function normalizeRel(p) {
   return String(p || '')
     .replace(/\\/g, '/')
     .replace(/^\/+|\/+$/g, '');
-}
-
-/** 排除 .git 目录及路径任一段为 .git 的条目（含子模块 worktree 的 `.git` 文件） */
-function isGitInternalPath(relPosix) {
-  const p = normalizeRel(relPosix);
-  if (!p) return false;
-  if (p === '.git' || p.startsWith('.git/')) return true;
-  if (p.includes('/.git/')) return true;
-  if (p.endsWith('/.git')) return true;
-  return false;
 }
 
 function safeJoin(root, relPosix) {
@@ -72,57 +35,6 @@ function safeJoin(root, relPosix) {
     throw new Error('path outside layer root');
   }
   return joined;
-}
-
-/** @returns {Map<string, { t: 'f'; size: number; mtime: number } | { t: 'l'; tg: string }>} */
-function collectIndex(absRoot) {
-  const map = new Map();
-  let n = 0;
-  let truncated = false;
-
-  function walk(abs, rel) {
-    if (n >= MAX_DIFF_ENTRIES) {
-      truncated = true;
-      return;
-    }
-    let st;
-    try {
-      st = fs.lstatSync(abs);
-    } catch {
-      return;
-    }
-    const relN = normalizeRel(rel);
-    if (isGitInternalPath(relN)) return;
-    if (st.isSymbolicLink()) {
-      map.set(relN, { t: 'l', tg: fs.readlinkSync(abs) });
-      n++;
-      return;
-    }
-    if (st.isDirectory()) {
-      let ents;
-      try {
-        ents = fs.readdirSync(abs, { withFileTypes: true });
-      } catch {
-        return;
-      }
-      for (const e of ents) {
-        if (e.name === '.git') continue;
-        walk(path.join(abs, e.name), relN ? `${relN}/${e.name}` : e.name);
-        if (n >= MAX_DIFF_ENTRIES) {
-          truncated = true;
-          return;
-        }
-      }
-      return;
-    }
-    if (st.isFile()) {
-      map.set(relN, { t: 'f', size: st.size, mtime: st.mtimeMs });
-      n++;
-    }
-  }
-
-  walk(absRoot, '');
-  return { map, truncated };
 }
 
 function filesContentEqual(fpA, fpB) {
@@ -321,6 +233,29 @@ function resolvePairedWorkdirsForDiff(parentId, lid, rel) {
 export function getLayerParentDiffFiles(layerId, opts = {}) {
   const lid = String(layerId || '').trim();
   const known = new Set(listLayerRows().map((r) => r.layer_id));
+
+  // -- 若已传 offset>0（续拉分页），优先从缓存取全量结果切片，避免重跑全量扫描 --
+  const offsetRaw = Number(opts.offset);
+  if (Number.isFinite(offsetRaw) && offsetRaw > 0) {
+    const parentIdGuess = readLayerMeta(lid)?.parent_layer_id;
+    const rootsC = layerGitWorkdirRootsForFileListing(lid);
+    const rootsP = parentIdGuess ? layerGitWorkdirRootsForFileListing(parentIdGuess) : [];
+    const cached = diffCacheGet(lid, parentIdGuess || lid, rootsC, rootsP);
+    if (cached) {
+      return applyLayerParentDiffPagination(
+        finalizeLayerParentDiffPayload(parentIdGuess || null, lid, {
+          layer_id: lid,
+          parent_layer_id: parentIdGuess || null,
+          same: cached.changes.length === 0,
+          changes: cached.changes,
+          truncated: cached.truncated,
+          detail: '',
+        }),
+        opts,
+      );
+    }
+  }
+
   if (!known.has(lid)) {
     return applyLayerParentDiffPagination(
       {
@@ -376,6 +311,7 @@ export function getLayerParentDiffFiles(layerId, opts = {}) {
     const cc = collectIndex(workC0);
     const truncated = cp.truncated || cc.truncated;
     const changes = compareIndices(workP0, workC0, cp.map, cc.map);
+    diffCacheSet(lid, parentId, changes, truncated, rootsC, rootsP);
     return applyLayerParentDiffPagination(
       finalizeLayerParentDiffPayload(parentId, lid, {
         layer_id: lid,
@@ -430,10 +366,12 @@ export function getLayerParentDiffFiles(layerId, opts = {}) {
     const cc = collectIndex(workC0);
     anyTruncated = anyTruncated || cp.truncated || cc.truncated;
     allChanges.push(...compareIndices(workP0, workC0, cp.map, cc.map));
+    diffCacheSet(lid, parentId, allChanges, anyTruncated, rootsC, rootsP);
   }
 
   allChanges.sort((a, b) => String(a.path).localeCompare(String(b.path)));
   const same = allChanges.length === 0;
+  diffCacheSet(lid, parentId, allChanges, anyTruncated, rootsC, rootsP);
   return applyLayerParentDiffPagination(
     finalizeLayerParentDiffPayload(parentId, lid, {
       layer_id: lid,

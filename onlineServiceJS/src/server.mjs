@@ -94,6 +94,7 @@ import {
   rememberLayerGitPushCompareBranch,
   layerGitRemoteSnapshot,
 } from './layerFs.mjs';
+import { listLayerChildren } from './layerChildren.mjs';
 import { runLayerGitMerge } from './layerGitMerge.mjs';
 
 import {
@@ -1165,128 +1166,20 @@ api.get('/layers/:layer_id/files/*', (req, res) => {
 });
 
 api.get('/layers/:layer_id/children', (req, res) => {
-  const work = layerPrimaryGitWorkdir(req.params.layer_id);
-  if (!work) {
-    return res.json({ entries: [], total: 0, next_offset: 0, truncated: false });
-  }
-  const workResolved = path.resolve(work);
-  const dirRaw = (req.query.dir ?? '').toString().trim();
-  const dirRel = dirRaw.replace(/\\/g, '/').replace(/^\/+/, '');
-  const absDir = path.resolve(path.join(work, dirRel || '.'));
-  if (absDir !== workResolved && !absDir.startsWith(workResolved + path.sep)) {
-    return res.status(400).json({ detail: 'invalid dir' });
-  }
-  const prefixRaw = (req.query.prefix ?? '').toString().replace(/\\/g, '/');
-  const offset = Math.max(0, parseInt(req.query.offset ?? '0', 10) || 0);
-  const limit = Math.min(Math.max(1, parseInt(req.query.limit ?? '200', 10) || 200), 2000);
-
-  let dirents = [];
-  try {
-    dirents = fs.readdirSync(absDir, { withFileTypes: true });
-  } catch (e) {
-    return res.status(400).json({ detail: String(e.message || e) });
-  }
-
-  function normalizeRel(p) {
-    return String(p || '')
-      .replace(/\\/g, '/')
-      .replace(/^\/+|\/+$/g, '');
-  }
-
-  function gitStatusPathSets(workDir) {
-    const cwd = String(workDir || '').trim();
-    if (!cwd) return { staged: new Set(), unstaged: new Set(), deleted: new Set() };
-    const env = { ...process.env, GIT_TERMINAL_PROMPT: '0' };
-
-    // 获取 git status --porcelain 来检查哪些是已删除的
-    const statusPorcelain = (() => {
-      try {
-        const out = spawnSync(gitCmd(), ['status', '--porcelain'], {
-          cwd,
-          encoding: 'utf8',
-          env,
-          maxBuffer: 32 * 1024 * 1024,
-        });
-        return String(out.stdout || '');
-      } catch {
-        return '';
-      }
-    })();
-
-    const deleted = new Set();
-    for (const line of statusPorcelain.split('\n')) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      const status = trimmed.slice(0, 2);
-      const pathPart = trimmed.slice(3);
-      const normalizedPath = normalizeRel(pathPart);
-      if (normalizedPath && (status.startsWith('D') || status.includes('D'))) {
-        deleted.add(normalizedPath);
-      }
-    }
-
-    return { staged: new Set(), unstaged: new Set(), deleted };
-  }
-
-  function entryMatchesPrefix(relPosix, baseName) {
-    if (!prefixRaw) return true;
-    if (relPosix.startsWith(prefixRaw)) return true;
-    if (baseName.startsWith(prefixRaw)) return true;
-    const noTrail = prefixRaw.endsWith('/') ? prefixRaw.slice(0, -1) : prefixRaw;
-    if (noTrail && (baseName === noTrail || relPosix === noTrail)) return true;
-    return false;
-  }
-
-  // Get deleted files for this workdir
-  const { deleted: deletedInner } = gitStatusPathSets(work);
-
-  const rows = [];
-  for (const ent of dirents) {
-    if (ent.name === '.git') continue;
-    const relPosix = dirRel ? `${dirRel}/${ent.name}` : ent.name;
-    if (!entryMatchesPrefix(relPosix, ent.name)) continue;
-
-    let isDir = ent.isDirectory();
-    if (ent.isSymbolicLink()) {
-      try {
-        const st = fs.statSync(path.join(absDir, ent.name));
-        isDir = st.isDirectory();
-      } catch {
-        continue;
-      }
-    }
-
-    // Skip if this file is marked as deleted in git
-    if (!isDir && deletedInner.has(normalizeRel(relPosix))) continue;
-
-    let size = 0;
-    if (!isDir) {
-      try {
-        size = fs.statSync(path.join(absDir, ent.name)).size;
-      } catch {
-        /* ignore */
-      }
-    }
-    rows.push({
-      type: isDir ? 'dir' : 'file',
-      path: relPosix,
-      size,
-    });
-  }
-
-  rows.sort((a, b) => {
-    if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
-    return String(a.path).localeCompare(String(b.path));
+  const result = listLayerChildren(req.params.layer_id, {
+    dir: (req.query.dir ?? '').toString(),
+    prefix: (req.query.prefix ?? '').toString(),
+    offset: req.query.offset,
+    limit: req.query.limit,
   });
-
-  const total = rows.length;
-  const page = rows.slice(offset, offset + limit);
-  const truncated = offset + page.length < total;
+  if (!result.ok) {
+    return res.status(result.status || 400).json({ detail: result.detail || 'invalid dir' });
+  }
   res.json({
-    entries: page,
-    total,
-    next_offset: offset + page.length,
-    truncated,
+    entries: result.entries,
+    total: result.total,
+    next_offset: result.next_offset,
+    truncated: result.truncated,
   });
 });
 
