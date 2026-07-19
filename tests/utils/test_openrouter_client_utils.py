@@ -20,9 +20,10 @@ from trae_agent.utils.llm_clients.openrouter_client import OpenRouterClient
 TEST_MODEL = "mistralai/mistral-small-3.2-24b-instruct:free"
 
 
-@unittest.skipIf(
-    os.getenv("SKIP_OPENROUTER_TEST", "").lower() == "true",
-    "Open router tests skipped due to SKIP_OPENROUTER_TEST environment variable",
+# 默认跳过：需外网 + OPENROUTER_API_KEY；与文件头 WARNING 一致。需联调时设 RUN_OPENROUTER_TEST=true。
+@unittest.skipUnless(
+    os.getenv("RUN_OPENROUTER_TEST", "").lower() in ("1", "true", "yes", "on"),
+    "OpenRouter live tests skipped (set RUN_OPENROUTER_TEST=true to enable)",
 )
 class TestOpenRouterClient(unittest.TestCase):
     """

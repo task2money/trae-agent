@@ -7,6 +7,7 @@ import {
   resolvedParentLayerId,
   listLayerRows,
   layerGitWorkdirRootsForFileListing,
+  matchGitRootByLongestPrefix,
 } from './layerFs.mjs';
 import { gitCmd } from './gitCmd.mjs';
 import { collectIndex, isGitInternalPath } from './layerParentDiffCollect.mjs';
@@ -202,15 +203,15 @@ function resolvePairedWorkdirsForDiff(parentId, lid, rel) {
     if (!wP || !wC) return null;
     return { workP: wP, workC: wC, inner: rel, label: rel };
   }
-  for (const rC of rootsC) {
-    const pre = (rC.relPrefix || '').trim();
-    if (!pre) continue;
-    if (rel === pre || rel.startsWith(`${pre}/`)) {
-      const inner = rel === pre ? '' : rel.slice(pre.length + 1);
-      const wP = findParentWorkdirForChildPrefix(rootsP, rC.relPrefix);
-      if (rC.workdir && wP) {
-        return { workP: wP, workC: rC.workdir, inner, label: rel };
-      }
+  // 嵌套仓与父仓同时存在时须最长前缀（如 ram-work/docs 优先于 ram-work）
+  const hitC = matchGitRootByLongestPrefix(rootsC, rel);
+  if (hitC?.workdir) {
+    const wP =
+      findParentWorkdirForChildPrefix(rootsP, hitC.relPrefix) ||
+      matchGitRootByLongestPrefix(rootsP, rel)?.workdir ||
+      layerPrimaryGitWorkdir(parentId);
+    if (wP) {
+      return { workP: wP, workC: hitC.workdir, inner: hitC.inner, label: rel };
     }
   }
   if (rootsC.length === 1) {

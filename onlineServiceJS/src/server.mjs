@@ -97,6 +97,7 @@ import {
 } from './layerFs.mjs';
 import { listLayerChildren } from './layerChildren.mjs';
 import { runLayerGitMerge } from './layerGitMerge.mjs';
+import { commitLayerGitWorkdirs } from './layerGitCommit.mjs';
 
 import {
   createJob,
@@ -1458,19 +1459,19 @@ api.post('/layers/:layer_id/git/unstage', async (req, res) => {
 });
 
 api.post('/layers/:layer_id/git/commit', async (req, res) => {
-  const work = layerPrimaryGitWorkdir(req.params.layer_id);
-  if (!work) return res.status(400).json({ detail: 'no git' });
   const msg = (req.body?.message || 'commit').toString();
   const sa = req.body?.stage_all;
   const doStageAll = sa === undefined || sa === true;
   try {
-    if (doStageAll) {
-      await gitExec(['add', '-A'], work);
-    }
-    await gitExec(['commit', '-m', msg], work);
-    res.json({ ok: true });
+    const result = commitLayerGitWorkdirs(req.params.layer_id, {
+      message: msg,
+      stage_all: doStageAll,
+    });
+    res.json(result);
   } catch (e) {
-    res.status(400).json({ detail: String(e.message || e) });
+    const detail = String(e.message || e);
+    if (e.code === 'NO_GIT') return res.status(400).json({ detail: 'no git' });
+    res.status(400).json({ detail });
   }
 });
 

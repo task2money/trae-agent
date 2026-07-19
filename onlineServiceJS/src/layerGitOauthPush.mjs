@@ -13,6 +13,7 @@ import {
   markOriginRemoteTrackingToHead,
   rememberLayerGitPushCompareBranch,
 } from './layerFs.mjs';
+import { workdirNeedsPush } from './layerGitCommit.mjs';
 import {
   appendOutboundReqLog,
   appendGitPushReqLog,
@@ -428,16 +429,27 @@ export async function runLayerGithubOauthAccessPush(opts) {
   }
 
   const roots = layerGitWorkdirRootsForFileListing(layerId);
-  const gitRoots = roots.filter((row) => {
+  const allGitRoots = roots.filter((row) => {
     try {
       return fs.existsSync(path.join(row.workdir, '.git'));
     } catch {
       return false;
     }
   });
-  if (!gitRoots.length) {
+  // 嵌套展开后仓数可能很多：只推脏/相对远端有提交的工作树，避免干净子仓索 token 失败
+  const gitRoots = allGitRoots.filter((row) => workdirNeedsPush(row.workdir, targetBranch));
+  if (!allGitRoots.length) {
     appendGitPushReqLog(`oauth layer_id=${layerId} fail reason=no_git`);
     return { httpStatus: 400, payload: { ok: false, detail: 'no git' } };
+  }
+  if (!gitRoots.length) {
+    appendGitPushReqLog(
+      `oauth layer_id=${layerId} fail reason=nothing_to_push scanned=${allGitRoots.length}`,
+    );
+    return {
+      httpStatus: 400,
+      payload: { ok: false, detail: 'nothing to push（无脏工作区且无待推送提交）' },
+    };
   }
 
   const dstRef = normalizeBranchRef(targetBranch);
