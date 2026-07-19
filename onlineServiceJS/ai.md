@@ -26,6 +26,12 @@
 ### 最佳实践（一级分类）
 > 提升交付可靠性的建议
 
+#### 凭据续签（二级分类）
+##### access 主动 refresh-access
+- 描述：长跑进程在 TTL 将尽（默认 skew 5m）时须主动 `refresh-access`（`src/proactiveAccessRefresh.mjs`），与 go_relay 对称。可用 `TRAE_SKIP_PROACTIVE_ACCESS_REFRESH=1` 关闭；skew/poll 见 `TRAE_ACCESS_TOKEN_REFRESH_SKEW_SEC` / `TRAE_ACCESS_TOKEN_REFRESH_POLL_SEC`。
+- 适用场景：容器 access 1h TTL、SaaS by-scope / 转发
+- 优先级：高
+
 #### 推送时机（二级分类）
 ##### 先提交再推送
 - 描述：先 git commit，再 `DOCKER_PUSH=1 ./buildDocker.sh`，以便镜像 tag 与 HEAD 一致。
@@ -48,4 +54,5 @@
   3. 新版本规则覆盖旧版本规则
 
 ## 变更日志
+- 2026-07-19：补充 access 主动 refresh-access 最佳实践（proactiveAccessRefresh）
 - 2026-07-12：版本 1.0.0 - 初始创建，强化提交后 Docker 推送提醒

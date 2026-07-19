@@ -62,6 +62,7 @@ import {
   startSaasContainerHeartbeatLoop,
   startSaasLayerGraphPushLoop,
 } from './saasTaskCloud.mjs';
+import { startProactiveAccessRefreshLoop } from './proactiveAccessRefresh.mjs';
 import { readOrPullServiceConfig } from './ensureServiceConfig.mjs';
 import {
   getExecStreamManifest,
@@ -2143,6 +2144,10 @@ export async function main({
     const hbDelay = String(process.env.TRAE_SAAS_HEARTBEAT_INITIAL_DELAY_SEC || '5').trim();
     console.log(
       `[onlineServiceJS] 已调度 SaaS 容器心跳（首跳延迟 ${hbDelay}s，间隔见 TRAE_SAAS_HEARTBEAT_INTERVAL_SEC）`,
+    );
+    startProactiveAccessRefreshLoop();
+    console.log(
+      '[onlineServiceJS] 已调度 access 主动续签（skew 见 TRAE_ACCESS_TOKEN_REFRESH_SKEW_SEC，默认 5m）',
     );
     startSaasLayerGraphPushLoop(() => buildLayersSnapshot(bootstrapCloneLayerId));
     const lgDelay = String(process.env.TRAE_SAAS_LAYER_GRAPH_PUSH_INITIAL_DELAY_SEC || '8').trim();

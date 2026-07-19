@@ -1381,20 +1381,38 @@ export function containerRefreshTokenStorePath() {
   return path.join(runtimeDir(), 'container_refresh_token.json');
 }
 
-export function readPersistedRefreshToken() {
+/**
+ * 读取落盘换票结果（refresh / access / expires_at），供主动续签与 go_relay 同步。
+ * @returns {{ refreshToken: string, accessToken: string, expiresAt: string }}
+ */
+export function readPersistedTokenStore() {
   const fromEnv = String(process.env.CONTAINER_REFRESH_TOKEN || '').trim();
-  if (fromEnv) return fromEnv;
+  if (fromEnv) {
+    return { refreshToken: fromEnv, accessToken: '', expiresAt: '' };
+  }
   const storePath = containerRefreshTokenStorePath();
-  if (!fs.existsSync(storePath)) return '';
+  if (!fs.existsSync(storePath)) {
+    return { refreshToken: '', accessToken: '', expiresAt: '' };
+  }
   try {
     const data = JSON.parse(fs.readFileSync(storePath, 'utf8'));
     const taskId = bootstrapTaskIdForTokenStore();
     const storedTask = String(data.task_id || '').trim();
-    if (taskId && storedTask && taskId !== storedTask) return '';
-    return String(data.refresh_token || '').trim();
+    if (taskId && storedTask && taskId !== storedTask) {
+      return { refreshToken: '', accessToken: '', expiresAt: '' };
+    }
+    return {
+      refreshToken: String(data.refresh_token || '').trim(),
+      accessToken: String(data.access_token || '').trim(),
+      expiresAt: String(data.expires_at || '').trim(),
+    };
   } catch {
-    return '';
+    return { refreshToken: '', accessToken: '', expiresAt: '' };
   }
+}
+
+export function readPersistedRefreshToken() {
+  return readPersistedTokenStore().refreshToken;
 }
 
 /**
@@ -1500,7 +1518,7 @@ export function formatTokenExchangeFailureLog(e) {
   return `token-exchange: ${tag}${codeHint} ${detail}`;
 }
 
-async function runRefreshAccessOnly(prefix, refreshToken, tokenTimeout) {
+export async function runRefreshAccessOnly(prefix, refreshToken, tokenTimeout) {
   const rt = String(refreshToken || '').trim();
   if (!rt) throw new Error('refresh-access: empty refresh_token');
   logTokenExchange(

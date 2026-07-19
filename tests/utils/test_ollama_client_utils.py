@@ -19,9 +19,10 @@ from trae_agent.utils.llm_clients.ollama_client import OllamaClient
 TEST_MODEL = "qwen3:4b"
 
 
-@unittest.skipIf(
-    os.getenv("SKIP_OLLAMA_TEST", "").lower() == "true",
-    "Ollama tests skipped due to SKIP_OLLAMA_TEST environment variable",
+# 默认跳过：依赖本机 Ollama 守护进程；与文件头 WARNING 一致。需联调时设 RUN_OLLAMA_TEST=true。
+@unittest.skipUnless(
+    os.getenv("RUN_OLLAMA_TEST", "").lower() in ("1", "true", "yes", "on"),
+    "Ollama live tests skipped (set RUN_OLLAMA_TEST=true to enable)",
 )
 class TestOllamaClient(unittest.TestCase):
     def test_OllamaClient_init(self):
