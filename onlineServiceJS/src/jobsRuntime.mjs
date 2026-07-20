@@ -4,6 +4,7 @@ import path from 'path';
 import crypto from 'crypto';
 
 import { bootstrapCloneLayerId, lastBootstrapTaskDetail } from './bootstrap.mjs';
+import { assertReposLayoutReadyForJobs } from './bootstrapCloneLayoutSeal.mjs';
 import { normalizeJobCommandEnv } from './normalizeJobCommandEnv.mjs';
 import { runAutoRunDelivery } from './autoRunOrchestration.mjs';
 import {
@@ -375,7 +376,9 @@ export async function createJob(body) {
   if (Boolean(parent_job_id) === Boolean(repo_layer_id)) {
     throw new Error('须且仅能设置 parent_job_id 或 repo_layer_id 之一');
   }
-  if (!anyLayerHasGitRepo()) throw new Error('请先完成「克隆仓库」后再创建任务。');
+  assertReposLayoutReadyForJobs(anyLayerHasGitRepo(), {
+    enforceSeal: Boolean(bootstrapCloneLayerId),
+  });
 
   if (command_kind === 'trae' && !fs.existsSync(configFilePath())) {
     throw new Error(`Config missing: ${configFilePath()}`);
@@ -487,7 +490,9 @@ export function enqueueLayerQueueItem(layerId, body) {
   if (!command) throw new Error('command 不能为空');
   const command_kind = String(body?.command_kind || 'trae').toLowerCase();
   if (!['trae', 'shell'].includes(command_kind)) throw new Error('invalid command_kind');
-  if (!anyLayerHasGitRepo()) throw new Error('请先完成「克隆仓库」后再创建任务。');
+  assertReposLayoutReadyForJobs(anyLayerHasGitRepo(), {
+    enforceSeal: Boolean(bootstrapCloneLayerId),
+  });
   if (command_kind === 'trae' && !fs.existsSync(configFilePath())) {
     throw new Error(`Config missing: ${configFilePath()}`);
   }

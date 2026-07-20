@@ -47,6 +47,7 @@ import {
   collectRepoBranchPlans,
   checkoutWorkBranchesForJobs,
 } from './bootstrapWorkBranch.mjs';
+import { setBootstrapReposLayoutReady } from './bootstrapCloneLayoutSeal.mjs';
 
 export let bootstrapCloneLayerId = null;
 /** 为 true 时 server 须在引导结束后调用 registerBootstrapCloneJob（仅「任务详情已含仓库并完成引导克隆」） */
@@ -717,6 +718,8 @@ async function cloneReposIntoSharedLayer(urlsOrJobs, credRoot, cloudPrefix, acce
   clearCloneLayerLog(layerId);
   /** 须在首条日志写入前赋值：克隆可能持续数分钟，期间 GET /api/repos/bootstrap-clone-log 与 /api/project/active 依赖此 id。 */
   bootstrapCloneLayerId = layerId;
+  /** 父仓落盘后 anyLayerHasGitRepo 即为 true；须等 nested 移入+切分支后才密封，防止过早叠层。 */
+  setBootstrapReposLayoutReady(false);
 
   const layerDir = layerPath(layerId);
   const { jobs, stagingRoot } = planBootstrapCloneJobs(layerDir, jobsIn);
@@ -929,11 +932,17 @@ async function cloneReposIntoSharedLayer(urlsOrJobs, credRoot, cloudPrefix, acce
       );
     }
 
+    // 克隆层锁定点：并行克隆 + 子仓移入父仓 +（可选）工作分支切换均已结束
+    setBootstrapReposLayoutReady(true);
+    console.log(
+      '[onlineServiceJS] BOOTSTRAP_PHASE=clone_layer_sealed 克隆层布局已锁定（含 nested relocate）',
+    );
     return layerId;
   } catch (e) {
     if (bootstrapRepoLogState && bootstrapRepoLogState.layerId === layerId) {
       bootstrapRepoLogState = null;
     }
+    setBootstrapReposLayoutReady(false);
     throw e;
   }
 }
@@ -947,6 +956,8 @@ function createInitialWorkspaceLayer() {
   const layerId = startupEmptyLayerId || ensureStartupEmptyLayer();
   createRootLayer(layerId);
   writeLayerMeta(layerId, 'clone', null);
+  /** 无关联仓库：无 nested relocate，空克隆层即可视为已锁定（建任务仍受 anyLayerHasGitRepo 约束）。 */
+  setBootstrapReposLayoutReady(true);
   appendOutboundReqLog(`bootstrap: initial writable layer (reuse empty-root, no git, await clone) ${layerId}`);
   console.log(`[onlineServiceJS] 已复用空层锚点为初始可写层（无 git，待首次克隆）: ${layerId}`);
   return layerId;
@@ -1553,6 +1564,7 @@ export async function runBootstrapTokenExchangeOnly() {
   bootstrapCloneLayerId = null;
   bootstrapRepoLogState = null;
   bootstrapRegisterCloneJob = false;
+  setBootstrapReposLayoutReady(false);
   let prefix;
   try {
     prefix = taskApiPrefix();

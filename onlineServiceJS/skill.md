@@ -148,6 +148,7 @@ Dockerfile 基于 **ubuntu:24.04**（可通过构建参数 `BASE_IMAGE` / 环境
 |------|------|------|
 | `POST` | `/api/jobs` | JSON：`command`（必填）、`command_kind`（`trae` \| `shell`，默认 `trae`）、`parent_job_id`（可选）、`repo_layer_id`（可选）、`prior_context_job_id`（可选）、`git_branch`（可选）、`env`（可选）。 |
 | `GET` | `/api/jobs` | 返回 `{ "jobs": [ ... ] }`。字段含 `git_destructive_locked`：**当前恒为 `false`**（未实现基线锁定）。 |
+| `GET` | `/api/requirements/task-gate` | `{ clone_done }`：有 git **且** 克隆层布局已密封（含 nested 移入父仓与工作分支切换）。 |
 | `GET` | `/api/jobs/{job_id}` | 单条任务详情。 |
 | `GET` | `/api/jobs/{job_id}/parent` | 父任务：`parent` 为对象或 `null`。 |
 | `GET` | `/api/jobs/{job_id}/steps` | 仅从 **`ONLINE_PROJECT_STATE_ROOT`** 读取：`runtime/layer_artifacts/{layer_id}/.trajectories/trajectory_*.json`（`agent_steps`）与 `runtime/job_logs/trae_agent_json/{job_id}/step_*/agent_step_full.json`（或 `agent_step.json`）；**不**扫层工作区目录。无数据时 `steps` 为空并附 `note`。Query：`after_step`（仅 `step_number > after_step`）、`limit`（1–50；**省略则返回全部**，兼容旧客户端）。分页响应额外含 `total_steps` / `has_more` / `next_after_step`。SaaS 任务详情应按步拉取，勿依赖 `GET /api/jobs/{id}` 内嵌全量 `output`。 |
@@ -186,7 +187,7 @@ Dockerfile 基于 **ubuntu:24.04**（可通过构建参数 `BASE_IMAGE` / 环境
 | `GET` | `/api/layers/{layer_id}/files/{file_rel_posix}` | 读取单文件；支持 `max_bytes` 等（见路由实现）。 |
 | `GET` | `/api/layers/{layer_id}/children` | 列目录子项；查询 `dir`/`prefix`/`offset`/`limit`。路径语义与扁平文件列表一致：子目录/多仓并列时带仓库 `relPrefix`（实现见 `layerChildren.mjs`）。 |
 | `GET` | `/api/layers/{layer_id}/diff/parent` | **未提供**该路由（无目录树全文 diff）；变动请用 `diff/parent/files` 与 `diff/parent/file`。 |
-| `GET` | `/api/layers/{layer_id}/diff/parent/files` | 相对父层工作目录的条目对比列表（`added`/`removed`/`modified`），见 `layerParentDiff.mjs`；无父层时 `detail` 说明。可选查询 `offset`/`limit`（limit 上限 500）分页，响应含 `change_count`/`next_offset`/`has_more`；未传 `limit` 时仍返回全量。 |
+| `GET` | `/api/layers/{layer_id}/diff/parent/files` | 相对父层工作目录的条目对比列表（`added`/`removed`/`modified`），见 `layerParentDiff.mjs` / `collectPairChanges`（优先双端 git status + HEAD 分叉 tree-diff；跨仓对象不可见时双端 `ls-tree`；无 git 才 walk）；无父层时 `detail` 说明。可选查询 `offset`/`limit`（limit 上限 500）分页，响应含 `change_count`/`next_offset`/`has_more`；未传 `limit` 时仍返回全量。 |
 | `GET` | `/api/layers/{layer_id}/diff/parent/file` | 查询参数 **`path`**：单路径文本 diff（或二进制提示）；无父层 **400**。 |
 | `DELETE` | `/api/layers/{layer_id}` | 删除该层及其直接子层（自底向上顺序见 `deleteLayerTree`）。 |
 | `POST` | `/api/layers/{layer_id}/queue` | 向指定层添加队列项，返回创建结果。 |
@@ -252,7 +253,7 @@ Dockerfile 基于 **ubuntu:24.04**（可通过构建参数 `BASE_IMAGE` / 环境
 - **富文本呈现声明（表驱动 + 编辑器契约）**：控制台步骤区等按 JSON **声明各字段如何渲染**（纯文本 / 富文本 iframe 等），数据来自 **`GET /api/ui/agent-render-hints`**（查询参数或 `X-Access-Token` 与受保护 API 一致）。响应内 **`rich_text_editor`** 块提供与 **`sanitizeMachineContainerHtml`（`src/htmlSanitize.mjs`）逐字段一致** 的 **`html_allowlist`**（标签与属性表），供富文本编辑器配置白名单、导出校验或与 `presentation_modes.rich_iframe` 对齐；人读约定仍以业务侧 `machine_container.md` §7 为准。浏览器可在 **`…/{access_token}/render-hints`** 新窗口查看格式化后的该 JSON（与上述 API 同源）。
 - Docker 镜像从构建上下文复制 **`onlineServiceJS/static`**（与本包同源）；若缺少静态文件，返回简易 HTML 提示。
 - **页眉**：展示 **`REPO_ROOT`** 宿主仓库未推送提交数依赖 `GET /api/dev/service-repo-git-push`。**当前为占位响应**（不跑 `git rev-list`）。
-- **可写层变动**：依赖 `GET /api/layers/{layer_id}/diff/parent/files` 与 `GET /api/layers/{layer_id}/diff/parent/file?path=…`。由 `src/layerParentDiff.mjs` 对父层与当前层工作目录做递归条目对比（大目录有条目上限）；无父层时 JSON 带 `detail` 说明。
+- **可写层变动**：依赖 `GET /api/layers/{layer_id}/diff/parent/files` 与 `GET /api/layers/{layer_id}/diff/parent/file?path=…`。由 `collectPairChanges`（`layerParentDiffGit.mjs`）优先 git 生成变动集，无 git 时才对工作目录 walk 对比（walk 仍有 `MAX_DIFF_ENTRIES`）；无父层时 JSON 带 `detail` 说明。
 - 页面通过全局注入的访问令牌调用 API，并用 **`GET /api/events/stream?access_token=…`** 建立 `EventSource`。
 
 ### 该页实际调用的 HTTP 接口（与 `dev-local-token` 控制台一致）

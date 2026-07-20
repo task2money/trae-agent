@@ -44,6 +44,7 @@ import {
   collectRepoCloneJobs,
   bootstrapCloneLogFailurePayload,
 } from './bootstrap.mjs';
+import { isBootstrapReposLayoutReady } from './bootstrapCloneLayoutSeal.mjs';
 import { maybeStartAutoRunFirstInstruction } from './autoRunOrchestration.mjs';
 import {
   detailHasAtMentionRun,
@@ -96,6 +97,7 @@ import {
   layerGitRemoteSnapshot,
 } from './layerFs.mjs';
 import { listLayerChildren } from './layerChildren.mjs';
+import { readLayerFileContentPayload } from './layerFileContent.mjs';
 import { runLayerGitMerge } from './layerGitMerge.mjs';
 import { commitLayerGitWorkdirs } from './layerGitCommit.mjs';
 
@@ -571,7 +573,10 @@ api.get('/config', async (req, res) => {
 });
 
 api.get('/requirements/task-gate', (req, res) => {
-  res.json({ clone_done: anyLayerHasGitRepo() });
+  // clone_done：有 git 且克隆层布局已锁定（含 nested 移入父仓），与建任务门闸一致
+  res.json({
+    clone_done: anyLayerHasGitRepo() && isBootstrapReposLayoutReady(),
+  });
 });
 
 /** SaaS 下行心跳探测：GET ?seq=N，回显 ack=N（类 TCP ack，供 server-container-token/heartbeat/ 校验双向可达） */
@@ -1162,9 +1167,9 @@ api.get('/layers/:layer_id/files/*', (req, res) => {
   const fp = resolveAbsolutePathForLayerListedFile(lid, rel);
   if (!fp) return res.status(404).json({ detail: 'not found' });
   const max = Math.min(parseInt(req.query.max_bytes || '2000000', 10) || 2000000, 20_000_000);
-  const buf = fs.readFileSync(fp).subarray(0, max);
-  const text = buf.toString('utf8');
-  res.json({ path: rel, content: text, truncated: buf.length >= max });
+  const out = readLayerFileContentPayload(fp, rel, { maxBytes: max });
+  if (!out.ok) return res.status(out.status || 404).json(out.body || { detail: 'not found' });
+  res.json(out.body);
 });
 
 api.get('/layers/:layer_id/children', (req, res) => {

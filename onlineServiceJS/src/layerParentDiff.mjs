@@ -1,5 +1,4 @@
 import fs from 'fs';
-import path from 'path';
 import { execFileSync } from 'child_process';
 import {
   layerPrimaryGitWorkdir,
@@ -10,7 +9,9 @@ import {
   matchGitRootByLongestPrefix,
 } from './layerFs.mjs';
 import { gitCmd } from './gitCmd.mjs';
-import { collectIndex, isGitInternalPath } from './layerParentDiffCollect.mjs';
+import { isGitInternalPath } from './layerParentDiffCollect.mjs';
+import { normalizeRel, safeJoin } from './layerParentDiffCompare.mjs';
+import { collectPairChanges } from './layerParentDiffGit.mjs';
 import {
   applyLayerParentDiffPagination,
   diffCacheGet,
@@ -18,83 +19,6 @@ import {
 } from './layerParentDiffPage.mjs';
 
 export { applyLayerParentDiffPagination };
-
-const MAX_FILE_BYTES_FULL_COMPARE = 25 * 1024 * 1024;
-
-function normalizeRel(p) {
-  return String(p || '')
-    .replace(/\\/g, '/')
-    .replace(/^\/+|\/+$/g, '');
-}
-
-function safeJoin(root, relPosix) {
-  const clean = normalizeRel(relPosix);
-  const segs = clean ? clean.split('/').filter(Boolean) : [];
-  const joined = path.resolve(path.join(root, ...segs));
-  const rootR = path.resolve(root);
-  if (joined !== rootR && !joined.startsWith(rootR + path.sep)) {
-    throw new Error('path outside layer root');
-  }
-  return joined;
-}
-
-function filesContentEqual(fpA, fpB) {
-  const sa = fs.statSync(fpA);
-  const sb = fs.statSync(fpB);
-  if (sa.size !== sb.size) return false;
-  if (sa.size > MAX_FILE_BYTES_FULL_COMPARE) {
-    return sa.mtimeMs === sb.mtimeMs;
-  }
-  const a = fs.readFileSync(fpA);
-  const b = fs.readFileSync(fpB);
-  return Buffer.compare(a, b) === 0;
-}
-
-function compareIndices(parentRoot, childRoot, idxP, idxC) {
-  const changes = [];
-  const allKeys = new Set([...idxP.keys(), ...idxC.keys()]);
-  for (const p of [...allKeys].sort()) {
-    const a = idxP.get(p);
-    const b = idxC.get(p);
-    let absP;
-    let absC;
-    try {
-      absP = a ? safeJoin(parentRoot, p) : null;
-      absC = b ? safeJoin(childRoot, p) : null;
-    } catch {
-      continue;
-    }
-    if (a && !b) {
-      changes.push({ path: p, kind: 'removed' });
-      continue;
-    }
-    if (!a && b) {
-      changes.push({ path: p, kind: 'added' });
-      continue;
-    }
-    if (!a || !b) continue;
-    if (a.t !== b.t) {
-      changes.push({ path: p, kind: 'modified' });
-      continue;
-    }
-    if (a.t === 'l') {
-      if (a.tg !== b.tg) changes.push({ path: p, kind: 'modified' });
-      continue;
-    }
-    if (a.t === 'f') {
-      if (a.size !== b.size) {
-        changes.push({ path: p, kind: 'modified' });
-        continue;
-      }
-      try {
-        if (!filesContentEqual(absP, absC)) changes.push({ path: p, kind: 'modified' });
-      } catch {
-        changes.push({ path: p, kind: 'modified' });
-      }
-    }
-  }
-  return changes;
-}
 
 /** 与 {@link layerGitWorkdirRootsForFileListing} 中 relPrefix 对齐，在父层中找同一仓目录 */
 function findParentWorkdirForChildPrefix(rootsP, relPrefix) {
@@ -308,18 +232,15 @@ export function getLayerParentDiffFiles(layerId, opts = {}) {
         opts,
       );
     }
-    const cp = collectIndex(workP0);
-    const cc = collectIndex(workC0);
-    const truncated = cp.truncated || cc.truncated;
-    const changes = compareIndices(workP0, workC0, cp.map, cc.map);
-    diffCacheSet(lid, parentId, changes, truncated, rootsC, rootsP);
+    const pair0 = collectPairChanges(workP0, workC0);
+    diffCacheSet(lid, parentId, pair0.changes, pair0.truncated, rootsC, rootsP);
     return applyLayerParentDiffPagination(
       finalizeLayerParentDiffPayload(parentId, lid, {
         layer_id: lid,
         parent_layer_id: parentId,
-        same: changes.length === 0,
-        changes,
-        truncated,
+        same: pair0.changes.length === 0,
+        changes: pair0.changes,
+        truncated: pair0.truncated,
         detail: '',
       }),
       opts,
@@ -334,12 +255,10 @@ export function getLayerParentDiffFiles(layerId, opts = {}) {
     const workP = findParentWorkdirForChildPrefix(rootsP, rC.relPrefix);
     if (!workC || !workP) continue;
     comparedPairs += 1;
-    const cp = collectIndex(workP);
-    const cc = collectIndex(workC);
-    anyTruncated = anyTruncated || cp.truncated || cc.truncated;
-    const part = compareIndices(workP, workC, cp.map, cc.map);
+    const part = collectPairChanges(workP, workC);
+    anyTruncated = anyTruncated || part.truncated;
     const pre = (rC.relPrefix || '').trim();
-    for (const ch of part) {
+    for (const ch of part.changes) {
       const rel = ch.path || '';
       const pathOut = pre && rel ? `${pre}/${rel}` : pre || rel;
       if (!pathOut) continue;
@@ -363,10 +282,9 @@ export function getLayerParentDiffFiles(layerId, opts = {}) {
         opts,
       );
     }
-    const cp = collectIndex(workP0);
-    const cc = collectIndex(workC0);
-    anyTruncated = anyTruncated || cp.truncated || cc.truncated;
-    allChanges.push(...compareIndices(workP0, workC0, cp.map, cc.map));
+    const pairFb = collectPairChanges(workP0, workC0);
+    anyTruncated = anyTruncated || pairFb.truncated;
+    allChanges.push(...pairFb.changes);
     diffCacheSet(lid, parentId, allChanges, anyTruncated, rootsC, rootsP);
   }
 

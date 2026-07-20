@@ -131,14 +131,11 @@ export function readLayerGitPushCompareBranch(layerId) {
 }
 
 /**
- * 与层快照 `git_remote`、前端「推送」旁提交数一致；目录与 `layerPrimaryGitWorkdir` / `POST .../git/push` 相同。
- * ahead 语义：相对「推送目标 / 工作分支」未推送的提交数（不是盲目信 @{u}）。
- * 比较顺序：opts.compareBranch → 层内 remember → origin/<current_branch> → @{u}。
- * @param {string} layerId
+ * 单工作树 ahead 快照（供层内多仓聚合）。
+ * @param {string} work
  * @param {{ compareBranch?: string }} [opts]
- * @returns {{ is_git: boolean, ahead: number | null, no_upstream: boolean, upstream: string, current_branch: string, compare_branch: string }}
  */
-export function layerGitRemoteSnapshot(layerId, opts = {}) {
+function gitRemoteSnapshotForWorkdir(work, opts = {}) {
   const empty = {
     is_git: false,
     ahead: null,
@@ -147,14 +144,12 @@ export function layerGitRemoteSnapshot(layerId, opts = {}) {
     current_branch: '',
     compare_branch: '',
   };
-  const lid = String(layerId || '').trim();
-  if (!lid || !LAYER_ID_RE.test(lid)) return empty;
-  const work = layerPrimaryGitWorkdir(lid);
-  if (!work || !dirHasGit(work)) return empty;
+  const cwd = String(work || '').trim();
+  if (!cwd || !dirHasGit(cwd)) return empty;
 
   const run = (args) =>
     spawnSync(gitCmd(), args, {
-      cwd: work,
+      cwd,
       encoding: 'utf8',
       maxBuffer: 4 * 1024 * 1024,
       env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
@@ -170,8 +165,7 @@ export function layerGitRemoteSnapshot(layerId, opts = {}) {
   const current_branch =
     headRef.status === 0 ? String(headRef.stdout || '').trim() : '';
 
-  const compare_branch =
-    normalizeGitBranchName(opts?.compareBranch) || readLayerGitPushCompareBranch(lid) || '';
+  const compare_branch = normalizeGitBranchName(opts?.compareBranch) || '';
 
   /** @type {string[]} */
   const candidateBranches = [];
@@ -224,14 +218,12 @@ export function layerGitRemoteSnapshot(layerId, opts = {}) {
     };
   }
 
-  // 无 @{u} 且无 origin/<current_branch>：回退 origin/HEAD（默认分支）算 ahead，
-  // 避免 feature 本地名与远端不一致时 no_upstream=true / ahead=null，ztree 推送与提交门控全灭。
   /** @type {string[]} */
   const defaultBranchCandidates = [];
   const originHead = run(['symbolic-ref', '--quiet', 'refs/remotes/origin/HEAD']);
   if (originHead.status === 0) {
-    const headRef = String(originHead.stdout || '').trim(); // refs/remotes/origin/master
-    const defaultBranch = normalizeGitBranchName(headRef);
+    const href = String(originHead.stdout || '').trim();
+    const defaultBranch = normalizeGitBranchName(href);
     if (defaultBranch) defaultBranchCandidates.push(defaultBranch);
   }
   for (const b of ['master', 'main']) {
@@ -263,5 +255,83 @@ export function layerGitRemoteSnapshot(layerId, opts = {}) {
     current_branch,
     compare_branch,
   };
+}
+
+/**
+ * 聚合多仓 ahead：嵌套子仓有未推送提交时层快照也须 ahead>0，否则 ztree「推送」不出现
+ *（仅查主仓时常见「相对父层有文件 / 提交禁用 / 推送也无」）。
+ * @param {ReturnType<typeof gitRemoteSnapshotForWorkdir>[]} snaps
+ */
+export function aggregateGitRemoteSnapshots(snaps) {
+  const empty = {
+    is_git: false,
+    ahead: null,
+    no_upstream: true,
+    upstream: '',
+    current_branch: '',
+    compare_branch: '',
+  };
+  const list = (Array.isArray(snaps) ? snaps : []).filter((s) => s && s.is_git);
+  if (!list.length) return empty;
+
+  let aheadSum = 0;
+  let anyAheadKnown = false;
+  let anyTracked = false;
+  let current_branch = '';
+  let upstream = '';
+  let compare_branch = '';
+  for (const s of list) {
+    if (s.no_upstream !== true) anyTracked = true;
+    if (typeof s.ahead === 'number' && Number.isFinite(s.ahead) && s.ahead >= 0) {
+      aheadSum += Math.floor(s.ahead);
+      anyAheadKnown = true;
+    }
+    if (!current_branch && s.current_branch) current_branch = s.current_branch;
+    if (!upstream && s.upstream) upstream = s.upstream;
+    if (!compare_branch && s.compare_branch) compare_branch = s.compare_branch;
+  }
+  return {
+    is_git: true,
+    ahead: anyAheadKnown ? aheadSum : null,
+    no_upstream: !anyTracked,
+    upstream,
+    current_branch,
+    compare_branch,
+  };
+}
+
+/**
+ * 与层快照 `git_remote`、前端「推送」旁提交数一致。
+ * ahead：层内各 git 工作树（含 staging→移入后的嵌套子仓）相对推送目标未推送提交数之和。
+ * @param {string} layerId
+ * @param {{ compareBranch?: string }} [opts]
+ */
+export function layerGitRemoteSnapshot(layerId, opts = {}) {
+  const empty = {
+    is_git: false,
+    ahead: null,
+    no_upstream: true,
+    upstream: '',
+    current_branch: '',
+    compare_branch: '',
+  };
+  const lid = String(layerId || '').trim();
+  if (!lid || !LAYER_ID_RE.test(lid)) return empty;
+
+  const compare_branch =
+    normalizeGitBranchName(opts?.compareBranch) || readLayerGitPushCompareBranch(lid) || '';
+  const perOpts = compare_branch ? { compareBranch: compare_branch } : {};
+
+  const roots = layerGitWorkdirRootsForFileListing(lid).filter(
+    (r) => r?.workdir && dirHasGit(r.workdir),
+  );
+  if (!roots.length) {
+    const work = layerPrimaryGitWorkdir(lid);
+    if (!work || !dirHasGit(work)) return empty;
+    return gitRemoteSnapshotForWorkdir(work, perOpts);
+  }
+
+  const snaps = roots.map((r) => gitRemoteSnapshotForWorkdir(r.workdir, perOpts));
+  return aggregateGitRemoteSnapshots(snaps);
 }
 
