@@ -13,6 +13,7 @@ import {
   layerPrimaryGitWorkdir,
 } from './layerFs.mjs';
 import { runLayerOauthRefreshPush } from './layerGitOauthRefreshPush.mjs';
+import { emitRuntimeEvent } from './runtimeEventLog.mjs';
 
 export function composeAutoRunCommand(title, description) {
   const t = String(title || '').trim();
@@ -98,19 +99,38 @@ export async function maybeStartAutoRunFirstInstruction(opts) {
 
   if (!shouldTriggerAutoRunFirstInstruction({ autoRun, layerId, command, markerExists })) {
     if (autoRun && !command) {
-      log.warn?.('[onlineServiceJS] AUTO_RUN_FIRST_SKIP reason=empty_title_and_description');
-      console.warn('[onlineServiceJS] AUTO_RUN_FIRST_SKIP reason=empty_title_and_description');
+      emitRuntimeEvent('AUTO_RUN_FIRST_SKIP', {
+        level: 'warn',
+        message: 'empty_title_and_description',
+        fields: { reason: 'empty_title_and_description' },
+        consoleLine: '[onlineServiceJS] AUTO_RUN_FIRST_SKIP reason=empty_title_and_description',
+      });
     } else if (autoRun && markerExists) {
-      console.log('[onlineServiceJS] AUTO_RUN_FIRST_SKIP reason=marker_exists');
+      emitRuntimeEvent('AUTO_RUN_FIRST_SKIP', {
+        message: 'marker_exists',
+        fields: { reason: 'marker_exists' },
+        consoleLine: '[onlineServiceJS] AUTO_RUN_FIRST_SKIP reason=marker_exists',
+      });
     } else if (autoRun && !layerId) {
-      console.warn('[onlineServiceJS] AUTO_RUN_FIRST_SKIP reason=no_layer_id');
+      emitRuntimeEvent('AUTO_RUN_FIRST_SKIP', {
+        level: 'warn',
+        message: 'no_layer_id',
+        fields: { reason: 'no_layer_id' },
+        consoleLine: '[onlineServiceJS] AUTO_RUN_FIRST_SKIP reason=no_layer_id',
+      });
+    } else if (!autoRun) {
+      emitRuntimeEvent('AUTO_RUN_FIRST_SKIP', {
+        message: 'auto_run_false',
+        fields: { reason: 'auto_run_false' },
+      });
     }
     return null;
   }
 
-  console.log(
-    `[onlineServiceJS] AUTO_RUN_FIRST_INSTRUCTION_START layer_id=${layerId} command_len=${command.length}`,
-  );
+  emitRuntimeEvent('AUTO_RUN_FIRST_INSTRUCTION_START', {
+    fields: { layer_id: layerId, command_len: command.length },
+    consoleLine: `[onlineServiceJS] AUTO_RUN_FIRST_INSTRUCTION_START layer_id=${layerId} command_len=${command.length}`,
+  });
   const rec = await createJobFn({
     command,
     command_kind: 'trae',
@@ -119,9 +139,13 @@ export async function maybeStartAutoRunFirstInstruction(opts) {
     auto_run_commit_message: String(title || '').trim() || 'auto_run',
   });
   writeAutoRunFirstJobMarker(rec?.id, fsApi);
-  console.log(
-    `[onlineServiceJS] AUTO_RUN_FIRST_INSTRUCTION_STARTED job_id=${String(rec?.id || '')} layer_id=${String(rec?.layer_id || '')}`,
-  );
+  emitRuntimeEvent('AUTO_RUN_FIRST_INSTRUCTION_STARTED', {
+    fields: {
+      job_id: String(rec?.id || ''),
+      layer_id: String(rec?.layer_id || layerId || ''),
+    },
+    consoleLine: `[onlineServiceJS] AUTO_RUN_FIRST_INSTRUCTION_STARTED job_id=${String(rec?.id || '')} layer_id=${String(rec?.layer_id || '')}`,
+  });
   return rec;
 }
 
@@ -265,15 +289,27 @@ export async function runAutoRunDelivery(opts) {
   const commitFn = opts?.commitLayerChanges || commitLayerChanges;
 
   if (!layerId) {
-    console.warn('[onlineServiceJS] AUTO_RUN_DELIVERY_FAILED reason=no_layer_id');
+    emitRuntimeEvent('AUTO_RUN_DELIVERY_FAILED', {
+      level: 'warn',
+      message: 'no_layer_id',
+      fields: { reason: 'no_layer_id' },
+      consoleLine: '[onlineServiceJS] AUTO_RUN_DELIVERY_FAILED reason=no_layer_id',
+    });
     return { ok: false, detail: 'layer_id required' };
   }
   if (hasAutoRunDeliveryDone(fsApi)) {
-    console.log(`[onlineServiceJS] AUTO_RUN_DELIVERY_SKIP reason=done_marker layer_id=${layerId}`);
+    emitRuntimeEvent('AUTO_RUN_DELIVERY_SKIP', {
+      message: 'done_marker',
+      fields: { reason: 'done_marker', layer_id: layerId },
+      consoleLine: `[onlineServiceJS] AUTO_RUN_DELIVERY_SKIP reason=done_marker layer_id=${layerId}`,
+    });
     return { ok: true, skipped: true, reason: 'done_marker' };
   }
 
-  console.log(`[onlineServiceJS] AUTO_RUN_DELIVERY_BEGIN layer_id=${layerId}`);
+  emitRuntimeEvent('AUTO_RUN_DELIVERY_BEGIN', {
+    fields: { layer_id: layerId },
+    consoleLine: `[onlineServiceJS] AUTO_RUN_DELIVERY_BEGIN layer_id=${layerId}`,
+  });
   try {
     await syncFn(layerId, opts?.identities || []);
     const commitMessage = String(opts?.commitMessage || '').trim() || 'auto_run';
@@ -296,17 +332,27 @@ export async function runAutoRunDelivery(opts) {
       fsApi,
     );
     if (!pushOk) {
-      console.warn(
-        `[onlineServiceJS] AUTO_RUN_DELIVERY_FAILED layer_id=${layerId} phase=push http_status=${httpStatus} detail=${String(pushResult?.payload?.detail || '').slice(0, 240)}`,
-      );
+      emitRuntimeEvent('AUTO_RUN_DELIVERY_FAILED', {
+        level: 'warn',
+        phase: 'push',
+        message: String(pushResult?.payload?.detail || '').slice(0, 240),
+        fields: { layer_id: layerId, http_status: httpStatus },
+        consoleLine: `[onlineServiceJS] AUTO_RUN_DELIVERY_FAILED layer_id=${layerId} phase=push http_status=${httpStatus} detail=${String(pushResult?.payload?.detail || '').slice(0, 240)}`,
+      });
       return { ok: false, commitResult, pushResult };
     }
-    console.log(`[onlineServiceJS] AUTO_RUN_DELIVERY_COMPLETE layer_id=${layerId}`);
+    emitRuntimeEvent('AUTO_RUN_DELIVERY_COMPLETE', {
+      fields: { layer_id: layerId },
+      consoleLine: `[onlineServiceJS] AUTO_RUN_DELIVERY_COMPLETE layer_id=${layerId}`,
+    });
     return { ok: true, commitResult, pushResult };
   } catch (e) {
-    console.error(
-      `[onlineServiceJS] AUTO_RUN_DELIVERY_FAILED layer_id=${layerId} detail=${String(e?.message || e).slice(0, 500)}`,
-    );
+    emitRuntimeEvent('AUTO_RUN_DELIVERY_FAILED', {
+      level: 'error',
+      message: String(e?.message || e).slice(0, 500),
+      fields: { layer_id: layerId },
+      consoleLine: `[onlineServiceJS] AUTO_RUN_DELIVERY_FAILED layer_id=${layerId} detail=${String(e?.message || e).slice(0, 500)}`,
+    });
     // 失败也写 done，避免反复重试风暴；容器重建后标志清空可再试
     writeAutoRunDeliveryDone(
       {

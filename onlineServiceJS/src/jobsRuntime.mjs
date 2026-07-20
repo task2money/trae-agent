@@ -3,7 +3,7 @@ import { spawn } from 'child_process';
 import path from 'path';
 import crypto from 'crypto';
 
-import { bootstrapCloneLayerId, lastBootstrapTaskDetail } from './bootstrap.mjs';
+import { bootstrapCloneLayerId, lastBootstrapTaskDetail } from './bootstrapState.mjs';
 import { assertReposLayoutReadyForJobs } from './bootstrapCloneLayoutSeal.mjs';
 import { normalizeJobCommandEnv } from './normalizeJobCommandEnv.mjs';
 import { runAutoRunDelivery } from './autoRunOrchestration.mjs';

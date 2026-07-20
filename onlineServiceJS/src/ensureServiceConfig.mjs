@@ -3,7 +3,7 @@
  */
 import fs from 'fs';
 
-import { persistFeatureParamsEnv } from './bootstrap.mjs';
+import { persistFeatureParamsEnv } from './bootstrapFeatureParamsPersist.mjs';
 import { configFilePath } from './paths.mjs';
 import { postJson, taskApiPrefix } from './saasTaskCloud.mjs';
 

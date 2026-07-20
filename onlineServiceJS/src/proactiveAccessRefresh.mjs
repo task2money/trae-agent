@@ -5,9 +5,9 @@
 import { taskApiPrefix } from './saasTaskCloud.mjs';
 import {
   readPersistedTokenStore,
-  runRefreshAccessOnly,
   writePersistedRefreshToken,
-} from './bootstrap.mjs';
+} from './bootstrapTokenStore.mjs';
+import { runRefreshAccessOnly } from './bootstrapTokenExchange.mjs';
 
 /** @type {number} */
 export const DEFAULT_PROACTIVE_REFRESH_SKEW_MS = 5 * 60 * 1000;

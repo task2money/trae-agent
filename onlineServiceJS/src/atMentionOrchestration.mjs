@@ -1,6 +1,7 @@
 /**
  * ContextPack at_mention_run → 自动创建 trae job（容器内闭环）。
- * 与 auto_run 首指令互斥：detail 含合法 at_mention_run 时优先本路径。
+ * 与 auto_run 首指令互斥：合法 ContextPack（可建 job）时优先本路径；
+ * 仅有残缺 at_mention_run 时由 postBootstrapAgentKickoff 回退 auto_run。
  */
 import fs from 'fs';
 import path from 'path';
@@ -58,7 +59,7 @@ export function composeAtMentionCommand(pack) {
 
 /**
  * detail 是否带有可识别的 at_mention_run（无需 pack 全量校验通过）。
- * 用于与 auto_run 互斥：有 at_mention_run 即跳过 auto_run。
+ * 用于检测 detail 是否带 at_mention_run 对象（完整校验见 normalizeAtMentionContextPack）。
  */
 export function detailHasAtMentionRun(detail) {
   const run = detail?.at_mention_run;

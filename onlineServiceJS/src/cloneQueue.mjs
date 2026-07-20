@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { spawn } from 'node:child_process';
 
-import { appendCloneLayerLog } from './bootstrap.mjs';
+import { appendCloneLayerLog } from './bootstrapCloneLog.mjs';
 import { completeExecStream } from './execStream.mjs';
 import { broadcast } from './sseHub.mjs';
 import { gitCmd } from './gitCmd.mjs';
