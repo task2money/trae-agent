@@ -27,7 +27,9 @@ import {
   buildLayersSnapshot,
   mirrorLayerGraphToTaskCloudSSE,
   sweepDanglingLayerDirs,
+  listJobs,
 } from './jobsRuntime.mjs';
+import { retryPendingAutoRunDeliveries } from './autoRunDeliveryHooks.mjs';
 import { appendInitLogBestEffort } from './initLog.mjs';
 import { logJson } from './jsonLog.mjs';
 import { initOtel } from './otel.mjs';
@@ -262,6 +264,22 @@ export async function main({
       await mirrorLayerGraphToTaskCloudSSE();
     } catch {
       /* 推层图至任务云为辅助通道，失败不阻断服务 */
+    }
+    try {
+      // 启动补跑：首指令已 completed 但交付失败/中断时恢复第 4 步（push/PR）
+      const retry = await retryPendingAutoRunDeliveries({
+        listJobs,
+        mirrorLayerGraphToTaskCloudSSE,
+      });
+      if (retry?.attempted) {
+        console.log(
+          `[onlineServiceJS] AUTO_RUN_DELIVERY_RETRY attempted=${retry.attempted}`,
+        );
+      }
+    } catch (e) {
+      console.error(
+        `[onlineServiceJS] AUTO_RUN_DELIVERY_RETRY error: ${String(e?.message || e).slice(0, 400)}`,
+      );
     }
   } catch (e) {
     const msg = String(e?.message || e || 'bootstrap failed').slice(0, 800);

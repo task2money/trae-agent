@@ -4,6 +4,7 @@
 import { postJson, taskApiPrefix } from './saasTaskCloud.mjs';
 import { runLayerGithubOauthAccessPush } from './layerGitOauthPush.mjs';
 import { collectOauthRepoWriteTargets } from './layerGitOauthFetchTokenFiles.mjs';
+import { collectRepoBranchPlans } from './bootstrapWorkBranch.mjs';
 import fs from 'fs';
 import path from 'path';
 import { logsDir } from './paths.mjs';
@@ -85,8 +86,9 @@ export async function runLayerOauthRefreshPush(opts) {
         30,
         { traceId },
       );
-      const tb = detail?.task?.target_branch;
-      if (typeof tb === 'string' && tb.trim()) targetBranch = tb.trim();
+      // 与 bootstrap / auto_run 交付一致：勿只读 task.target_branch
+      const shared = collectRepoBranchPlans(detail).sharedWorkBranch;
+      if (typeof shared === 'string' && shared.trim()) targetBranch = shared.trim();
     } catch (e) {
       appendOauthRefreshPushLog(
         `oauth-refresh-push fail layer_id=${layerId} detail=task-detail ${String(e?.message || e).slice(0, 240)}`,

@@ -1,22 +1,17 @@
 import fs from 'fs';
 import { spawn } from 'child_process';
 import path from 'path';
-import crypto from 'crypto';
 
-import { bootstrapCloneLayerId, lastBootstrapTaskDetail } from './bootstrapState.mjs';
+import { bootstrapCloneLayerId } from './bootstrapState.mjs';
 import { assertReposLayoutReadyForJobs } from './bootstrapCloneLayoutSeal.mjs';
 import { normalizeJobCommandEnv } from './normalizeJobCommandEnv.mjs';
-import { runAutoRunDelivery } from './autoRunOrchestration.mjs';
+import { triggerAutoRunDeliveryForJob } from './autoRunDeliveryHooks.mjs';
 import {
-  jobsStatePath,
   configFilePath,
-  repoRoot,
-  layersRoot,
-  layerArtifactsDir,
   jobLogsTaeJsonDir,
   jobLogsTaeJsonPath,
+  layerArtifactsDir,
 } from './paths.mjs';
-import { getCloneOpStatus } from './cloneQueue.mjs';
 import {
   createStackedLayer,
   directChildLayerIds,
@@ -24,272 +19,44 @@ import {
   layerPath,
   layerPrimaryGitWorkdir,
   anyLayerHasGitRepo,
-  listLayerRows,
-  readLayerMeta,
-  resolvedParentLayerId,
   newLayerId,
-  gitWorktreeDirty,
-  layerRootOrChildHasGit,
-  layerGitRemoteSnapshot,
 } from './layerFs.mjs';
 import { broadcast } from './sseHub.mjs';
 import { resetExecStream, appendExecStream, completeExecStream } from './execStream.mjs';
 import { startAgentStepPoller } from './jobStepEvents.mjs';
-import { publishLayerGraphSnapshotToSaas } from './saasTaskCloud.mjs';
+import {
+  getJobsMap,
+  getRunningMap,
+  getLayerQueues,
+  saveState,
+  recordJobEvent,
+  newJobId,
+  removeLayerQueue,
+} from './jobsRuntimeState.mjs';
+import { buildTraeCmd, loadPriorTrajectoryContextPrefix } from './jobsRuntimeTrae.mjs';
+import {
+  buildLayersSnapshot,
+  mirrorLayerGraphToTaskCloudSSE,
+  sortLayersSerialChronological,
+} from './jobsRuntimeSnapshot.mjs';
 
-/** @type {Map<string, object>} */
-const jobs = new Map();
-/** @type {Map<string, import('child_process').ChildProcess>} */
-const running = new Map();
+export {
+  getJobEvents,
+  jobToApiDict,
+  listJobs,
+  getJob,
+  removeLayerQueue,
+} from './jobsRuntimeState.mjs';
 
-/** @type {Map<string, Array<{ phase: string, message: string, ts: number }>>} */
-const jobEvents = new Map();
-
-/** 某层上「当前任务结束后」按顺序执行的指令（与 UI 加入队列一致）；键为层 id，值为待执行项 */
-/** @type {Record<string, Array<{ command: string, command_kind: string, env?: object | null }>>} */
-let layerQueues = {};
-
-function recordJobEvent(jobId, phase, message = '') {
-  const events = jobEvents.get(jobId) || [];
-  events.push({ phase, message, ts: Date.now() });
-  jobEvents.set(jobId, events);
-}
-
-const MAX_OUTPUT_LENGTH = 50000;
-const OUTPUT_TRUNCATION_MARKER = '\n[...truncated...]\n';
-
-/**
- * Truncate job output if it exceeds MAX_OUTPUT_LENGTH, keeping only the tail.
- * ExecStream is NOT affected — only the in-memory rec.output buffer.
- */
-function truncateJobOutput(rec) {
-  if (!rec || typeof rec.output !== 'string') return;
-  if (rec.output.length <= MAX_OUTPUT_LENGTH) return;
-  rec.output = OUTPUT_TRUNCATION_MARKER + rec.output.slice(-MAX_OUTPUT_LENGTH);
-}
-
-export function getJobEvents(jobId, offset = 0, limit = 500) {
-  const events = jobEvents.get(jobId) || [];
-  const start = Math.max(0, offset);
-  const end = start + limit;
-  return {
-    events: events.slice(start, end),
-    next_offset: end < events.length ? end : null,
-  };
-}
-
-function newJobId() {
-  return crypto.randomUUID();
-}
-
-function saveState() {
-  for (const j of jobs.values()) {
-    truncateJobOutput(j);
-  }
-  const payload = {
-    jobs: [...jobs.values()].map((j) => ({ ...j })),
-    layer_queues: { ...layerQueues },
-  };
-  const p = jobsStatePath();
-  fs.mkdirSync(path.dirname(p), { recursive: true });
-  fs.writeFileSync(p, JSON.stringify(payload, null, 2), 'utf8');
-}
-
-function loadState() {
-  const p = jobsStatePath();
-  if (!fs.existsSync(p)) return;
-  try {
-    const data = JSON.parse(fs.readFileSync(p, 'utf8'));
-    for (const row of data.jobs || []) {
-      if (!row.id) continue;
-      if (row.status === 'running') row.status = 'interrupted';
-      jobs.set(row.id, row);
-    }
-    const lq = data.layer_queues;
-    if (lq && typeof lq === 'object' && !Array.isArray(lq)) {
-      layerQueues = {};
-      for (const [k, v] of Object.entries(lq)) {
-        if (!k || !Array.isArray(v)) continue;
-        const cleaned = v
-          .filter((x) => x && String(x.command || '').trim())
-          .map((x) => ({
-            command: String(x.command).trim(),
-            command_kind: String(x.command_kind || 'trae').toLowerCase(),
-            env: x.env && typeof x.env === 'object' ? x.env : null,
-          }));
-        if (cleaned.length) layerQueues[k] = cleaned;
-      }
-    }
-  } catch {
-    /* ignore */
-  }
-}
-
-function venvTraePaths() {
-  const venv = String(process.env.TRAE_VENV || path.join(repoRoot(), '.venv')).trim();
-  return {
-    traeCli: path.join(venv, 'bin', 'trae-cli'),
-    py: path.join(venv, 'bin', 'python'),
-    py3: path.join(venv, 'bin', 'python3'),
-  };
-}
-
-function buildTraeCmd(workDir, cmdText, opts = {}) {
-  const { trajectoryFile, model, provider } = opts;
-  const custom = String(process.env.TRAE_CLI || '').trim();
-  if (custom) {
-    const args = [cmdText, `--working-dir=${workDir}`];
-    if (trajectoryFile) args.push(`--trajectory-file=${trajectoryFile}`);
-    if (provider) args.push(`--provider=${provider}`);
-    if (model) args.push(`--model=${model}`);
-    return { cmd: custom, args, shell: true };
-  }
-  const { traeCli, py, py3 } = venvTraePaths();
-  const cfg = configFilePath();
-  const modelArgs = [
-    ...(provider ? [`--provider=${provider}`] : []),
-    ...(model ? [`--model=${model}`] : []),
-  ];
-  if (fs.existsSync(traeCli)) {
-    const a = ['run', cmdText, `--config-file=${cfg}`, `--working-dir=${workDir}`, ...modelArgs];
-    if (trajectoryFile) a.push(`--trajectory-file=${trajectoryFile}`);
-    return { cmd: traeCli, args: a, shell: false };
-  }
-  if (fs.existsSync(py)) {
-    return {
-      cmd: py,
-      args: [
-        '-m',
-        'trae_agent.cli',
-        'run',
-        cmdText,
-        `--config-file=${cfg}`,
-        `--working-dir=${workDir}`,
-        ...modelArgs,
-        ...(trajectoryFile ? [`--trajectory-file=${trajectoryFile}`] : []),
-      ],
-      shell: false,
-    };
-  }
-  if (fs.existsSync(py3)) {
-    return {
-      cmd: py3,
-      args: [
-        '-m',
-        'trae_agent.cli',
-        'run',
-        cmdText,
-        `--config-file=${cfg}`,
-        `--working-dir=${workDir}`,
-        ...modelArgs,
-        ...(trajectoryFile ? [`--trajectory-file=${trajectoryFile}`] : []),
-      ],
-      shell: false,
-    };
-  }
-  return null;
-}
-
-const PRIOR_CTX_MAX_TOTAL = 14000;
-const PRIOR_CTX_MAX_TASK = 2500;
-const PRIOR_CTX_MAX_FINAL = 9000;
-const PRIOR_CTX_TAIL_STEPS = 12;
-const PRIOR_CTX_MAX_STEP_SUMMARY = 500;
-
-/**
- * 从上一任务的 trajectory JSON 生成前置文本，注入到新 Trae 指令前以延续「会话」语义。
- * 轨迹路径约定与 runJobAsync 写入一致：layer_artifacts/{layer}/.trajectories/trajectory_{jobId}.json
- */
-function loadPriorTrajectoryContextPrefix(priorJobId) {
-  const jid = String(priorJobId || '').trim();
-  if (!jid) return '';
-  const j = jobs.get(jid);
-  if (!j || j.command_kind === 'clone') return '';
-  let trajPath;
-  try {
-    trajPath = path.join(layerArtifactsDir(j.layer_id), '.trajectories', `trajectory_${jid}.json`);
-  } catch {
-    return '';
-  }
-  if (!fs.existsSync(trajPath)) return '';
-  let raw;
-  try {
-    raw = fs.readFileSync(trajPath, 'utf8');
-  } catch {
-    return '';
-  }
-  let doc;
-  try {
-    doc = JSON.parse(raw);
-  } catch {
-    return '';
-  }
-  if (!doc || typeof doc !== 'object') return '';
-
-  const trunc = (s, n) => {
-    const t = String(s ?? '').trim();
-    if (!t) return '';
-    return t.length <= n ? t : t.slice(0, n - 1) + '…';
-  };
-
-  const task = trunc(doc.task, PRIOR_CTX_MAX_TASK);
-  const finalResult = trunc(doc.final_result, PRIOR_CTX_MAX_FINAL);
-
-  const steps = Array.isArray(doc.agent_steps) ? doc.agent_steps : [];
-  const tail = steps.slice(-PRIOR_CTX_TAIL_STEPS);
-  const stepLines = tail
-    .map((s, idx) => {
-      const sn = s && s.step_number != null ? s.step_number : idx + 1;
-      const sum = trunc(s.delivery_summary || s.reflection || '', PRIOR_CTX_MAX_STEP_SUMMARY);
-      return sum ? `- 步骤 ${sn}: ${sum}` : '';
-    })
-    .filter(Boolean);
-
-  const parts = [
-    '<<< PRIOR_AGENT_SESSION_CONTEXT >>>',
-    '以下内容为同一工作区上一段 AI 任务的轨迹摘要，请在回答新指令时继承其中的结论与约束（除非新指令明确要求推翻）。',
-    task ? `上一任务指令:\n${task}` : '',
-    finalResult ? `上一任务最终结果摘要:\n${finalResult}` : '',
-    stepLines.length ? `上一任务后续关键步骤:\n${stepLines.join('\n')}` : '',
-    '<<< END_PRIOR_CONTEXT >>>',
-  ].filter(Boolean);
-
-  let block = parts.join('\n\n');
-  if (block.length > PRIOR_CTX_MAX_TOTAL) block = block.slice(0, PRIOR_CTX_MAX_TOTAL - 1) + '…';
-  return block ? `${block}\n\n` : '';
-}
-
-/**
- * 将内存中的 job 转为 API 可见字段。
- * 默认不附带完整 output（列表 / 层级快照可达十余 MB，拖垮 JSON 与剪贴板）；
- * 需要全文时传 `{ includeOutput: true }`（如 GET /api/jobs/:id?include_output=1）。
- *
- * @param {object} rec
- * @param {{ includeOutput?: boolean }} [opts]
- */
-export function jobToApiDict(rec, opts = {}) {
-  const includeOutput = opts.includeOutput === true;
-  const out = rec && rec.output != null ? String(rec.output) : '';
-  const base = { ...rec, git_destructive_locked: false, output_chars: out.length };
-  if (includeOutput) {
-    base.output = out;
-    base.output_omitted = false;
-  } else {
-    delete base.output;
-    base.output_omitted = true;
-  }
-  return base;
-}
-
-export function listJobs() {
-  return [...jobs.values()].sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
-}
-
-export function getJob(id) {
-  return jobs.get(id) || null;
-}
+export {
+  layerIdQualifiesForSnapshot,
+  sweepDanglingLayerDirs,
+  buildLayersSnapshot,
+  mirrorLayerGraphToTaskCloudSSE,
+} from './jobsRuntimeSnapshot.mjs';
 
 function removeJobsForLayer(layerId) {
+  const jobs = getJobsMap();
   for (const [jid, j] of jobs) {
     if (j.layer_id === layerId) jobs.delete(jid);
   }
@@ -306,31 +73,11 @@ function purgeChildLayers(baseLayerId) {
   }
 }
 
-function createdAtMsForSort(iso) {
-  const m = Date.parse(iso || '');
-  return Number.isFinite(m) ? m : 0;
-}
-
-/**
- * 与 static/index.html sortLayersSerialChronological 一致：created_at 旧→新，同秒 bootstrap 层优先。
- */
-function sortLayersSerialChronological(layerList, bootstrapLayerId) {
-  const bs = String(bootstrapLayerId || '').trim();
-  const bsUse = bs && layerList.some((r) => r.layer_id === bs) ? bs : '';
-  return [...layerList].sort((a, b) => {
-    const da = createdAtMsForSort(a.created_at);
-    const db = createdAtMsForSort(b.created_at);
-    if (da !== db) return da - db;
-    const sa = bsUse && a.layer_id === bsUse ? 1 : 0;
-    const sb = bsUse && b.layer_id === bsUse ? 1 : 0;
-    if (sa !== sb) return sb - sa;
-    return String(a.layer_id || '').localeCompare(String(b.layer_id || ''));
-  });
-}
-
 function obliterateLayer(layerId) {
   const lid = String(layerId || '').trim();
   if (!lid) return;
+  const jobs = getJobsMap();
+  const layerQueues = getLayerQueues();
   const ids = [...jobs.entries()].filter(([, j]) => j.layer_id === lid).map(([id]) => id);
   for (const jid of ids) {
     try {
@@ -367,6 +114,7 @@ function purgeSerialTailAfterLayer(anchorLayerId) {
 }
 
 export async function createJob(body) {
+  const jobs = getJobsMap();
   const command = String(body.command || '').trim();
   if (!command) throw new Error('command 不能为空');
   const command_kind = (body.command_kind || 'trae').toLowerCase();
@@ -437,19 +185,9 @@ export async function createJob(body) {
   return rec;
 }
 
-/**
- * UI：运行中任务所在层上「加入队列」。当前任务正常结束（非用户中断）后，按顺序以该层为父叠建新层并执行。
- * @returns {{ ok: true, layer_id: string, queue_position: number, queue_depth: number }}
- */
-export function removeLayerQueue(layerId) {
-  const lid = String(layerId || '').trim();
-  if (!lid || !layerQueues[lid]) return;
-  delete layerQueues[lid];
-  saveState();
-}
-
 /** 终止并移除绑定到该层的任务记录（删层前调用，避免快照仍含已删层任务）。 */
 function stripJobsForLayer(layerId) {
+  const jobs = getJobsMap();
   const lid = String(layerId || '').trim();
   if (!lid) return;
   for (const [jid, j] of [...jobs]) {
@@ -483,6 +221,7 @@ export async function deleteLayerAndMirrorToSaas(layerId) {
 }
 
 export function enqueueLayerQueueItem(layerId, body) {
+  const layerQueues = getLayerQueues();
   const lid = String(layerId || '').trim();
   if (!lid) throw new Error('layer_id 无效');
   if (!fs.existsSync(layerPath(lid))) throw new Error(`layer not found: ${lid}`);
@@ -507,6 +246,7 @@ export function enqueueLayerQueueItem(layerId, body) {
 }
 
 async function drainQueuedJobsForLayer(completedLayerId, completedJobId) {
+  const layerQueues = getLayerQueues();
   const lid = String(completedLayerId || '').trim();
   if (!lid) return;
   const q = layerQueues[lid];
@@ -540,6 +280,7 @@ async function drainQueuedJobsForLayer(completedLayerId, completedJobId) {
 }
 
 function runJobAsync(rec, workDir) {
+  const running = getRunningMap();
   resetExecStream('job', rec.id);
   const env = { ...process.env, PYTHONUNBUFFERED: '1' };
   let trajectoryFile;
@@ -641,19 +382,7 @@ function runJobAsync(rec, workDir) {
       void drainQueuedJobsForLayer(rec.layer_id, rec.id);
     }
     if (!wasInterrupted && rec.status === 'completed' && rec.auto_run_first) {
-      const detail = lastBootstrapTaskDetail;
-      const commitMessage =
-        String(rec.auto_run_commit_message || '').trim() ||
-        String(detail?.task?.title || '').trim() ||
-        'auto_run';
-      const identities = Array.isArray(detail?.repo_git_identities) ? detail.repo_git_identities : [];
-      const targetBranch = String(detail?.task?.target_branch || '').trim();
-      void runAutoRunDelivery({
-        layerId: rec.layer_id,
-        commitMessage,
-        identities,
-        targetBranch,
-      }).catch((e) => {
+      void triggerAutoRunDeliveryForJobAndMirror(rec).catch((e) => {
         console.error(
           `[jobsRuntime] AUTO_RUN_DELIVERY unexpected error: ${String(e?.message || e).slice(0, 400)}`,
         );
@@ -679,7 +408,16 @@ function runJobAsync(rec, workDir) {
   });
 }
 
+/** @param {object} rec */
+export async function triggerAutoRunDeliveryForJobAndMirror(rec) {
+  return triggerAutoRunDeliveryForJob(rec, {
+    mirrorLayerGraphToTaskCloudSSE,
+  });
+}
+
 export function interruptJob(jobId) {
+  const jobs = getJobsMap();
+  const running = getRunningMap();
   const rec = jobs.get(jobId);
   if (!rec) throw new Error('job not found');
   const proc = running.get(jobId);
@@ -693,6 +431,8 @@ export function interruptJob(jobId) {
 }
 
 export function deleteJob(jobId) {
+  const jobs = getJobsMap();
+  const layerQueues = getLayerQueues();
   const rec = jobs.get(jobId);
   if (!rec) throw new Error('job not found');
   interruptJob(jobId);
@@ -709,53 +449,8 @@ export function deleteJob(jobId) {
   return { ok: true };
 }
 
-/**
- * 只把「有合法 meta、克隆进行中、或已有仓库内容」的目录计为可写层。
- * 避免残留空目录名符合 layer id 时混入 GET /api/layers，在图上多出一个与 clone 同级的伪节点。
- */
-export function layerIdQualifiesForSnapshot(layerId) {
-  const lid = String(layerId || '').trim();
-  if (!lid) return false;
-  const p = layerPath(lid);
-  let stDir;
-  try {
-    stDir = fs.existsSync(p) ? fs.statSync(p) : null;
-  } catch {
-    return false;
-  }
-  if (!stDir || !stDir.isDirectory()) return false;
-  const m = readLayerMeta(lid);
-  if (m && m.kind) return true;
-  const op = getCloneOpStatus(lid);
-  if (op && (op.status === 'queued' || op.status === 'running')) return true;
-  try {
-    if (fs.existsSync(path.join(p, 'base'))) return true;
-  } catch {
-    /* ignore */
-  }
-  if (layerRootOrChildHasGit(p)) return true;
-  return false;
-}
-
-/**
- * 启动时移除非「可写层」的残留 layer 子目录，避免与真实克隆层在 UI 上重复出现。
- */
-export function sweepDanglingLayerDirs() {
-  const all = listLayerRows();
-  for (const row of all) {
-    const lid = row.layer_id;
-    if (layerIdQualifiesForSnapshot(lid)) continue;
-    const op = getCloneOpStatus(lid);
-    if (op && (op.status === 'queued' || op.status === 'running')) continue;
-    try {
-      deleteLayerTree(lid);
-    } catch {
-      /* ignore */
-    }
-  }
-}
-
 export function registerBootstrapCloneJob(layerId) {
+  const jobs = getJobsMap();
   const id = newJobId();
   const rec = {
     id,
@@ -777,87 +472,3 @@ export function registerBootstrapCloneJob(layerId) {
   jobs.set(id, rec);
   saveState();
 }
-
-export function buildLayersSnapshot(bootstrapLayerId) {
-  const rows = listLayerRows().filter((r) => layerIdQualifiesForSnapshot(r.layer_id));
-  const known = new Set(rows.map((r) => r.layer_id));
-  const jobsList = listJobs();
-  const cmdByLayer = {};
-  const cloneCmdByLayer = {};
-  for (let i = jobsList.length - 1; i >= 0; i--) {
-    const j = jobsList[i];
-    const lid = String(j.layer_id || '').trim();
-    if (!lid) continue;
-    if (j.command_kind === 'clone') {
-      if (cloneCmdByLayer[lid] === undefined && j.command) cloneCmdByLayer[lid] = j.command;
-      continue;
-    }
-    if (cmdByLayer[lid] === undefined) cmdByLayer[lid] = j.command;
-  }
-  const jobByLayer = {};
-  for (let i = jobsList.length - 1; i >= 0; i--) {
-    const j = jobsList[i];
-    const lid = String(j.layer_id || '').trim();
-    if (!lid || j.command_kind === 'clone') continue;
-    if (!jobByLayer[lid]) jobByLayer[lid] = j;
-  }
-  const layers = [];
-  for (const row of rows) {
-    const lid = row.layer_id;
-    const meta = readLayerMeta(lid);
-    if (meta?.kind === 'empty') continue;
-    let displayCmd = cmdByLayer[lid] || null;
-    if (!displayCmd && meta?.kind === 'clone' && meta.clone_url) {
-      displayCmd = `git clone ${meta.clone_url}`;
-    }
-    if (!displayCmd && cloneCmdByLayer[lid]) {
-      displayCmd = cloneCmdByLayer[lid];
-    }
-    const qArr = Array.isArray(layerQueues[lid]) ? layerQueues[lid] : [];
-    const queue_items = qArr.map((entry, position) => {
-      const cmd = String(entry.command || '');
-      const command_preview = cmd.length > 72 ? cmd.slice(0, 72) + '…' : cmd;
-      return {
-        position,
-        command_kind: entry.command_kind || 'trae',
-        command_preview,
-      };
-    });
-    const item = {
-      layer_id: lid,
-      created_at: row.created_at,
-      command: displayCmd,
-      parent_layer_id: resolvedParentLayerId(lid, known, jobsList),
-      job_id: jobByLayer[lid]?.id || null,
-      job_status: jobByLayer[lid]?.status || null,
-      queue_depth: qArr.length,
-      queue_items,
-      mind_state: jobByLayer[lid]?.status === 'running' || jobByLayer[lid]?.status === 'pending' ? 'running' : 'idle_done',
-      git_worktree_dirty: gitWorktreeDirty(lid),
-      git_remote: layerGitRemoteSnapshot(lid),
-      meta_kind: meta?.kind || null,
-    };
-    layers.push(item);
-  }
-  const bs = String(bootstrapLayerId || '').trim();
-  if (bs) {
-    const idx = layers.findIndex((x) => x.layer_id === bs);
-    if (idx > 0) {
-      const [sp] = layers.splice(idx, 1);
-      layers.unshift(sp);
-    }
-  }
-  return {
-    layers,
-    jobs: jobsList.map(jobToApiDict),
-    layers_root: layersRoot(),
-    bootstrap_layer_id: bs || null,
-  };
-}
-
-/** 将当前层级图镜像到任务云 SSE（container_layer_graph），供 Vue 任务详情与容器内 GET /api/events/stream 解耦。 */
-export async function mirrorLayerGraphToTaskCloudSSE() {
-  await publishLayerGraphSnapshotToSaas(buildLayersSnapshot(bootstrapCloneLayerId));
-}
-
-loadState();

@@ -13,6 +13,7 @@ import {
   writeAutoRunFirstJobMarker,
   hasAutoRunDeliveryDone,
   writeAutoRunDeliveryDone,
+  shouldSkipAutoRunDelivery,
   autoRunFirstJobMarkerPath,
   autoRunDeliveryDonePath,
 } from './autoRunOrchestration.mjs';
@@ -146,6 +147,9 @@ test('runAutoRunDelivery syncs commit and push; skips when done', async () => {
       pushCalls.push(opts);
       return { httpStatus: 200, payload: { ok: true, github_pull_request: { html_url: 'https://pr' } } };
     },
+    aheadDeps: {
+      layerGitRemoteSnapshot: () => ({ is_git: true, ahead: 0 }),
+    },
   });
   assert.equal(result.ok, true);
   assert.equal(syncCalls.length, 1);
@@ -153,6 +157,7 @@ test('runAutoRunDelivery syncs commit and push; skips when done', async () => {
   assert.equal(pushCalls.length, 1);
   assert.equal(pushCalls[0].targetBranch, 'feature/x');
   assert.equal(hasAutoRunDeliveryDone(), true);
+  assert.equal(shouldSkipAutoRunDelivery(), true);
 
   const again = await runAutoRunDelivery({
     layerId: 'layer_x',
@@ -169,13 +174,64 @@ test('runAutoRunDelivery syncs commit and push; skips when done', async () => {
   assert.equal(again.skipped, true);
 });
 
+test('runAutoRunDelivery does not lock done on push failure; allows retry', async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'autorun-del-fail-'));
+  process.env.ONLINE_PROJECT_STATE_ROOT = tmp;
+  let pushes = 0;
+  const failOnce = await runAutoRunDelivery({
+    layerId: 'layer_y',
+    commitMessage: 'msg',
+    targetBranch: 'feature/y',
+    syncRepoIdentitiesToLayer: async () => ({ applied_count: 0, results: [] }),
+    commitLayerChanges: async () => ({ ok: true, committed: 1 }),
+    runLayerOauthRefreshPush: async () => {
+      pushes += 1;
+      return { httpStatus: 400, payload: { ok: false, detail: 'push rejected' } };
+    },
+    aheadDeps: {
+      layerGitRemoteSnapshot: () => ({ is_git: true, ahead: 1 }),
+    },
+  });
+  assert.equal(failOnce.ok, false);
+  assert.equal(shouldSkipAutoRunDelivery(), false);
+  assert.equal(pushes, 1);
+
+  const okSecond = await runAutoRunDelivery({
+    layerId: 'layer_y',
+    commitMessage: 'msg',
+    targetBranch: 'feature/y',
+    syncRepoIdentitiesToLayer: async () => ({ applied_count: 0, results: [] }),
+    commitLayerChanges: async () => ({ ok: true, committed: 0, skipped: true }),
+    runLayerOauthRefreshPush: async () => {
+      pushes += 1;
+      return { httpStatus: 200, payload: { ok: true } };
+    },
+    aheadDeps: {
+      layerGitRemoteSnapshot: () => ({ is_git: true, ahead: 0 }),
+    },
+  });
+  assert.equal(okSecond.ok, true);
+  assert.equal(pushes, 2);
+  assert.equal(shouldSkipAutoRunDelivery(), true);
+});
+
+test('shouldSkipAutoRunDelivery retries legacy push_ok=false done marker', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'autorun-skip-'));
+  process.env.ONLINE_PROJECT_STATE_ROOT = tmp;
+  assert.equal(shouldSkipAutoRunDelivery(), false);
+  writeAutoRunDeliveryDone({ layer_id: 'L', push_ok: false, push_http_status: 400 });
+  assert.equal(shouldSkipAutoRunDelivery(), false);
+  writeAutoRunDeliveryDone({ layer_id: 'L', push_ok: true });
+  assert.equal(shouldSkipAutoRunDelivery(), true);
+});
+
 test('marker path helpers write under runtime', () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'autorun-m-'));
   process.env.ONLINE_PROJECT_STATE_ROOT = tmp;
   assert.ok(autoRunFirstJobMarkerPath().includes(path.join('runtime', 'auto_run_first_job.json')));
   assert.ok(autoRunDeliveryDonePath().includes(path.join('runtime', 'auto_run_delivery.done')));
   writeAutoRunFirstJobMarker('j1');
-  writeAutoRunDeliveryDone({ ok: true });
+  writeAutoRunDeliveryDone({ push_ok: true });
   assert.equal(hasAutoRunFirstJobMarker(), true);
   assert.equal(hasAutoRunDeliveryDone(), true);
 });

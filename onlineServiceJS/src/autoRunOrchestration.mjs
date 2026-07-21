@@ -10,8 +10,9 @@ import { gitCmd } from './gitCmd.mjs';
 import { repoMatchKeyFromUrl } from './repoMatchKey.mjs';
 import {
   layerGitWorkdirRootsForFileListing,
-  layerPrimaryGitWorkdir,
+  layerGitRemoteSnapshot,
 } from './layerFs.mjs';
+import { commitLayerGitWorkdirs } from './layerGitCommit.mjs';
 import { runLayerOauthRefreshPush } from './layerGitOauthRefreshPush.mjs';
 import { emitRuntimeEvent } from './runtimeEventLog.mjs';
 
@@ -65,6 +66,49 @@ export function writeAutoRunDeliveryDone(payload = {}, fsApi = fs) {
     JSON.stringify({ ...payload, at: new Date().toISOString() }, null, 2),
     'utf8',
   );
+}
+
+/**
+ * 仅当交付已成功（或干净跳过）时跳过；失败态 / push_ok=false 的旧 done 文件允许重试。
+ * 契约：设计文档要求「成功或明确跳过（无 diff 且无 ahead）」后才写 done。
+ */
+export function shouldSkipAutoRunDelivery(fsApi = fs) {
+  if (!hasAutoRunDeliveryDone(fsApi)) return false;
+  try {
+    const raw = JSON.parse(fsApi.readFileSync(autoRunDeliveryDonePath(), 'utf8'));
+    if (!raw || typeof raw !== 'object') return false;
+    if (raw.error) return false;
+    if (raw.push_ok === false) return false;
+    if (raw.skipped_clean === true) return true;
+    if (raw.push_ok === true) return true;
+    const st = Number(raw.push_http_status || 0);
+    if (st >= 200 && st < 300) return true;
+    // 无法判定的旧文件：为避免风暴仍跳过（新写入必带 push_ok）
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function autoRunDeliveryRetryCountPath() {
+  return path.join(runtimeDir(), 'auto_run_delivery.retry');
+}
+
+export function readAutoRunDeliveryRetryCount(fsApi = fs) {
+  try {
+    const n = Number.parseInt(String(fsApi.readFileSync(autoRunDeliveryRetryCountPath(), 'utf8')).trim(), 10);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  } catch {
+    return 0;
+  }
+}
+
+export function bumpAutoRunDeliveryRetryCount(fsApi = fs) {
+  const next = readAutoRunDeliveryRetryCount(fsApi) + 1;
+  const p = autoRunDeliveryRetryCountPath();
+  fsApi.mkdirSync(path.dirname(p), { recursive: true });
+  fsApi.writeFileSync(p, `${next}\n`, 'utf8');
+  return next;
 }
 
 export function shouldTriggerAutoRunFirstInstruction({
@@ -233,53 +277,40 @@ export async function syncRepoIdentitiesToLayer(layerId, identities, deps = {}) 
 }
 
 /**
- * 层内全部 git 工作区 stage + commit；无变更时返回 skipped。
+ * 层内全部 git 工作区 stage + commit（含嵌套子仓 / nested-repo-heads）；无变更时返回 skipped。
  */
 export async function commitLayerChanges(layerId, message, deps = {}) {
   const lid = String(layerId || '').trim();
   const msg = String(message || '').trim() || 'auto_run';
-  const rootsFn = deps.layerGitWorkdirRootsForFileListing || layerGitWorkdirRootsForFileListing;
-  const primaryFn = deps.layerPrimaryGitWorkdir || layerPrimaryGitWorkdir;
-  const execGit = deps.gitExec || gitExecAsync;
+  const commitFn = deps.commitLayerGitWorkdirs || commitLayerGitWorkdirs;
 
-  const roots = rootsFn(lid);
-  const workdirs = roots.length
-    ? roots.map((r) => r.workdir)
-    : (() => {
-        const w = primaryFn(lid);
-        return w ? [w] : [];
-      })();
-
-  if (!workdirs.length) {
-    return { ok: false, skipped: true, detail: 'no git workdir' };
-  }
-
-  let committed = 0;
-  let skippedNothing = 0;
-  for (const work of workdirs) {
-    try {
-      await execGit(['add', '-A'], work);
-      await execGit(['commit', '-m', msg], work);
-      committed += 1;
-    } catch (e) {
-      const detail = String(e?.message || e);
-      if (/nothing to commit/i.test(detail) || /no changes added/i.test(detail)) {
-        skippedNothing += 1;
-        continue;
-      }
-      throw e;
+  try {
+    const result = commitFn(lid, { message: msg, stage_all: true });
+    const n = Array.isArray(result?.committed) ? result.committed.length : 0;
+    return { ok: true, committed: n, skipped: n === 0, detail: result };
+  } catch (e) {
+    const code = e?.code || '';
+    const detail = String(e?.message || e);
+    if (code === 'NOTHING_TO_COMMIT' || /nothing to commit/i.test(detail)) {
+      return { ok: true, committed: 0, skipped: true, detail };
     }
+    if (code === 'NO_GIT' || /no git/i.test(detail)) {
+      return { ok: false, skipped: true, detail: 'no git workdir' };
+    }
+    throw e;
   }
-  return {
-    ok: true,
-    committed,
-    skipped_nothing: skippedNothing,
-    skipped: committed === 0 && skippedNothing > 0,
-  };
+}
+
+function layerStillHasPushableCommits(layerId, targetBranch, deps = {}) {
+  const snapFn = deps.layerGitRemoteSnapshot || layerGitRemoteSnapshot;
+  const tb = String(targetBranch || '').trim();
+  const snap = snapFn(layerId, tb ? { compareBranch: tb } : {});
+  return typeof snap?.ahead === 'number' && snap.ahead > 0;
 }
 
 /**
  * 首指令成功后的交付：身份 → commit → oauth-refresh-push（含 PR）。
+ * 成功或「无变更且无 ahead」才写 done；失败可重试（有次数上限）。
  */
 export async function runAutoRunDelivery(opts) {
   const layerId = String(opts?.layerId || '').trim();
@@ -287,6 +318,7 @@ export async function runAutoRunDelivery(opts) {
   const pushFn = opts?.runLayerOauthRefreshPush || runLayerOauthRefreshPush;
   const syncFn = opts?.syncRepoIdentitiesToLayer || syncRepoIdentitiesToLayer;
   const commitFn = opts?.commitLayerChanges || commitLayerChanges;
+  const maxRetries = Number.isFinite(opts?.maxRetries) ? Number(opts.maxRetries) : 3;
 
   if (!layerId) {
     emitRuntimeEvent('AUTO_RUN_DELIVERY_FAILED', {
@@ -297,7 +329,7 @@ export async function runAutoRunDelivery(opts) {
     });
     return { ok: false, detail: 'layer_id required' };
   }
-  if (hasAutoRunDeliveryDone(fsApi)) {
+  if (shouldSkipAutoRunDelivery(fsApi)) {
     emitRuntimeEvent('AUTO_RUN_DELIVERY_SKIP', {
       message: 'done_marker',
       fields: { reason: 'done_marker', layer_id: layerId },
@@ -305,10 +337,20 @@ export async function runAutoRunDelivery(opts) {
     });
     return { ok: true, skipped: true, reason: 'done_marker' };
   }
+  const retries = readAutoRunDeliveryRetryCount(fsApi);
+  if (retries >= maxRetries) {
+    emitRuntimeEvent('AUTO_RUN_DELIVERY_SKIP', {
+      level: 'warn',
+      message: 'max_retries',
+      fields: { reason: 'max_retries', layer_id: layerId, retries },
+      consoleLine: `[onlineServiceJS] AUTO_RUN_DELIVERY_SKIP reason=max_retries layer_id=${layerId} retries=${retries}`,
+    });
+    return { ok: false, skipped: true, reason: 'max_retries', retries };
+  }
 
   emitRuntimeEvent('AUTO_RUN_DELIVERY_BEGIN', {
-    fields: { layer_id: layerId },
-    consoleLine: `[onlineServiceJS] AUTO_RUN_DELIVERY_BEGIN layer_id=${layerId}`,
+    fields: { layer_id: layerId, attempt: retries + 1 },
+    consoleLine: `[onlineServiceJS] AUTO_RUN_DELIVERY_BEGIN layer_id=${layerId} attempt=${retries + 1}`,
   });
   try {
     await syncFn(layerId, opts?.identities || []);
@@ -321,46 +363,54 @@ export async function runAutoRunDelivery(opts) {
       traceId: opts?.traceId,
     });
     const httpStatus = Number(pushResult?.httpStatus || 0);
-    const pushOk = httpStatus >= 200 && httpStatus < 300 && pushResult?.payload?.ok !== false;
+    const detail = String(pushResult?.payload?.detail || '');
+    const nothingToPush = /nothing to push/i.test(detail);
+    const pushHttpOk = httpStatus >= 200 && httpStatus < 300 && pushResult?.payload?.ok !== false;
+    const stillAhead = layerStillHasPushableCommits(layerId, targetBranch, opts?.aheadDeps);
+    // 干净跳过：远端无 ahead 且无待推送；若仍 ahead 则视为失败（避免 done 锁死）
+    const cleanSkip = nothingToPush && !stillAhead;
+    const pushOk = pushHttpOk || cleanSkip;
+
+    if (!pushOk) {
+      const n = bumpAutoRunDeliveryRetryCount(fsApi);
+      emitRuntimeEvent('AUTO_RUN_DELIVERY_FAILED', {
+        level: 'warn',
+        phase: 'push',
+        message: detail.slice(0, 240) || (stillAhead ? 'still_ahead_after_push' : 'push_failed'),
+        fields: {
+          layer_id: layerId,
+          http_status: httpStatus,
+          retries: n,
+          still_ahead: stillAhead,
+        },
+        consoleLine: `[onlineServiceJS] AUTO_RUN_DELIVERY_FAILED layer_id=${layerId} phase=push http_status=${httpStatus} retries=${n} detail=${detail.slice(0, 240)}`,
+      });
+      return { ok: false, commitResult, pushResult, stillAhead, retries: n };
+    }
+
     writeAutoRunDeliveryDone(
       {
         layer_id: layerId,
         commit: commitResult,
-        push_http_status: httpStatus,
-        push_ok: pushOk,
+        push_http_status: httpStatus || (cleanSkip ? 200 : httpStatus),
+        push_ok: true,
+        ...(cleanSkip ? { skipped_clean: true } : {}),
       },
       fsApi,
     );
-    if (!pushOk) {
-      emitRuntimeEvent('AUTO_RUN_DELIVERY_FAILED', {
-        level: 'warn',
-        phase: 'push',
-        message: String(pushResult?.payload?.detail || '').slice(0, 240),
-        fields: { layer_id: layerId, http_status: httpStatus },
-        consoleLine: `[onlineServiceJS] AUTO_RUN_DELIVERY_FAILED layer_id=${layerId} phase=push http_status=${httpStatus} detail=${String(pushResult?.payload?.detail || '').slice(0, 240)}`,
-      });
-      return { ok: false, commitResult, pushResult };
-    }
     emitRuntimeEvent('AUTO_RUN_DELIVERY_COMPLETE', {
-      fields: { layer_id: layerId },
-      consoleLine: `[onlineServiceJS] AUTO_RUN_DELIVERY_COMPLETE layer_id=${layerId}`,
+      fields: { layer_id: layerId, skipped_clean: Boolean(cleanSkip) },
+      consoleLine: `[onlineServiceJS] AUTO_RUN_DELIVERY_COMPLETE layer_id=${layerId}${cleanSkip ? ' skipped_clean=1' : ''}`,
     });
-    return { ok: true, commitResult, pushResult };
+    return { ok: true, commitResult, pushResult, skipped_clean: cleanSkip };
   } catch (e) {
+    const n = bumpAutoRunDeliveryRetryCount(fsApi);
     emitRuntimeEvent('AUTO_RUN_DELIVERY_FAILED', {
       level: 'error',
       message: String(e?.message || e).slice(0, 500),
-      fields: { layer_id: layerId },
-      consoleLine: `[onlineServiceJS] AUTO_RUN_DELIVERY_FAILED layer_id=${layerId} detail=${String(e?.message || e).slice(0, 500)}`,
+      fields: { layer_id: layerId, retries: n },
+      consoleLine: `[onlineServiceJS] AUTO_RUN_DELIVERY_FAILED layer_id=${layerId} retries=${n} detail=${String(e?.message || e).slice(0, 500)}`,
     });
-    // 失败也写 done，避免反复重试风暴；容器重建后标志清空可再试
-    writeAutoRunDeliveryDone(
-      {
-        layer_id: layerId,
-        error: String(e?.message || e).slice(0, 500),
-      },
-      fsApi,
-    );
-    return { ok: false, detail: String(e?.message || e) };
+    return { ok: false, detail: String(e?.message || e), retries: n };
   }
 }

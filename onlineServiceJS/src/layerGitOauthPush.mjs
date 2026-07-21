@@ -14,13 +14,12 @@ import {
   rememberLayerGitPushCompareBranch,
 } from './layerFs.mjs';
 import { workdirNeedsPush } from './layerGitCommit.mjs';
-import {
-  appendOutboundReqLog,
-  appendGitPushReqLog,
-  sanitizeUrlForOutboundLog,
-  isDebugAgentEnabled,
-  debugAgentStringify,
-} from './outboundReqLog.mjs';
+import { appendGitPushReqLog } from './outboundReqLog.mjs';
+import { createGithubPullRequest, createGitlabMergeRequest } from './layerGitOauthPushPr.mjs';
+import { formatOauthMultiRepoPushDetail } from './layerGitOauthPushDetail.mjs';
+
+export { createGitlabMergeRequest } from './layerGitOauthPushPr.mjs';
+export { formatOauthMultiRepoPushDetail } from './layerGitOauthPushDetail.mjs';
 
 const GH_SLUG_RE = /github\.com[:/]([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/i;
 const GL_SLUG_RE = /gitlab[^:/]*[:/]([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/i;
@@ -216,162 +215,6 @@ function branchNameFromRef(ref) {
   return r;
 }
 
-async function createGithubPullRequest({ owner, repo, head, base, accessToken, title, bodyText }) {
-  const apiUrl = `https://api.github.com/repos/${owner}/${repo}/pulls`;
-  const safeUrl = sanitizeUrlForOutboundLog(apiUrl);
-  const t0 = Date.now();
-  let r;
-  try {
-    const headers = {
-      Accept: 'application/vnd.github+json',
-      Authorization: `Bearer ${accessToken}`,
-      'X-GitHub-Api-Version': '2022-11-28',
-      'Content-Type': 'application/json',
-    };
-    const requestBody = {
-      title: title || 'Pull request',
-      head,
-      base,
-      body: bodyText || '',
-    };
-    if (isDebugAgentEnabled()) {
-      appendOutboundReqLog(
-        `DEBUG_AGENT outbound request method=POST url=${apiUrl} headers=${debugAgentStringify(headers)} body=${debugAgentStringify(requestBody)}`,
-      );
-    }
-    r = await fetch(apiUrl, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(requestBody),
-    });
-  } catch (e) {
-    appendOutboundReqLog(
-      `github-api POST ${safeUrl} -> error ${String(e?.message || e).slice(0, 400)} ${Date.now() - t0}ms`,
-    );
-    throw e;
-  }
-  const text = await r.text();
-  if (isDebugAgentEnabled()) {
-    appendOutboundReqLog(
-      `DEBUG_AGENT outbound response method=POST url=${apiUrl} status=${r.status} headers=${debugAgentStringify(Object.fromEntries(r.headers.entries()))} body=${text}`,
-    );
-  }
-  appendOutboundReqLog(`github-api POST ${safeUrl} -> HTTP ${r.status} ${Date.now() - t0}ms`);
-  let json = null;
-  try {
-    json = JSON.parse(text);
-  } catch {
-    /* ignore */
-  }
-  return {
-    ok: r.status === 201,
-    status: r.status,
-    json,
-    text: text.slice(0, 2000),
-  };
-}
-
-/**
- * GitLab Merge Request（审查页 URL 字段为 web_url，映射为前端统一的 html_url）。
- * @param {{ originUrl: string, owner: string, repo: string, head: string, base: string, accessToken: string, title?: string, bodyText?: string }} opts
- */
-export async function createGitlabMergeRequest(opts) {
-  const originUrl = String(opts?.originUrl || '').trim();
-  const owner = String(opts?.owner || '').trim();
-  const repo = String(opts?.repo || '').trim();
-  const head = String(opts?.head || '').trim();
-  const base = String(opts?.base || '').trim();
-  const accessToken = String(opts?.accessToken || '').trim();
-  const title = String(opts?.title || '').trim() || 'Merge request';
-  const bodyText = String(opts?.bodyText || '').trim();
-  if (!originUrl || !owner || !repo || !head || !base || !accessToken) {
-    return { ok: false, status: 0, json: null, text: 'missing_gitlab_mr_params' };
-  }
-  let apiOrigin = '';
-  try {
-    const u = new URL(originUrl.includes('://') ? originUrl : `https://${originUrl}`);
-    apiOrigin = `${u.protocol}//${u.host}`;
-  } catch {
-    return { ok: false, status: 0, json: null, text: 'invalid_origin_url' };
-  }
-  const projectPath = encodeURIComponent(`${owner}/${repo}`);
-  const apiUrl = `${apiOrigin}/api/v4/projects/${projectPath}/merge_requests`;
-  const safeUrl = sanitizeUrlForOutboundLog(apiUrl);
-  const t0 = Date.now();
-  const requestBody = {
-    source_branch: head,
-    target_branch: base,
-    title,
-    description: bodyText || '',
-  };
-  const headers = {
-    Accept: 'application/json',
-    Authorization: `Bearer ${accessToken}`,
-    'Content-Type': 'application/json',
-  };
-  let r;
-  try {
-    if (isDebugAgentEnabled()) {
-      appendOutboundReqLog(
-        `DEBUG_AGENT outbound request method=POST url=${apiUrl} headers=${debugAgentStringify(headers)} body=${debugAgentStringify(requestBody)}`,
-      );
-    }
-    r = await fetch(apiUrl, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(requestBody),
-    });
-  } catch (e) {
-    appendOutboundReqLog(
-      `gitlab-api POST ${safeUrl} -> error ${String(e?.message || e).slice(0, 400)} ${Date.now() - t0}ms`,
-    );
-    throw e;
-  }
-  let text = await r.text();
-  // 已存在同名 MR 时尝试查找已有记录
-  if (r.status === 409 || r.status === 400) {
-    const listUrl = `${apiOrigin}/api/v4/projects/${projectPath}/merge_requests?state=opened&source_branch=${encodeURIComponent(head)}&target_branch=${encodeURIComponent(base)}`;
-    try {
-      const lr = await fetch(listUrl, {
-        method: 'GET',
-        headers: { Accept: 'application/json', Authorization: `Bearer ${accessToken}` },
-      });
-      const lt = await lr.text();
-      let lj = null;
-      try {
-        lj = JSON.parse(lt);
-      } catch {
-        /* ignore */
-      }
-      if (lr.ok && Array.isArray(lj) && lj.length > 0 && lj[0]?.web_url) {
-        appendOutboundReqLog(
-          `gitlab-api POST ${safeUrl} -> HTTP ${r.status} (reuse existing MR) ${Date.now() - t0}ms`,
-        );
-        return { ok: true, status: 200, json: lj[0], text: lt.slice(0, 2000), reused: true };
-      }
-    } catch {
-      /* fall through */
-    }
-  }
-  if (isDebugAgentEnabled()) {
-    appendOutboundReqLog(
-      `DEBUG_AGENT outbound response method=POST url=${apiUrl} status=${r.status} body=${text}`,
-    );
-  }
-  appendOutboundReqLog(`gitlab-api POST ${safeUrl} -> HTTP ${r.status} ${Date.now() - t0}ms`);
-  let json = null;
-  try {
-    json = JSON.parse(text);
-  } catch {
-    /* ignore */
-  }
-  return {
-    ok: r.status === 201,
-    status: r.status,
-    json,
-    text: text.slice(0, 2000),
-  };
-}
 
 /**
  * @param {object} opts
@@ -417,6 +260,9 @@ export async function runLayerGithubOauthAccessPush(opts) {
   const prBaseBranch = String(opts.prBaseBranch || '').trim();
   const prTitle = String(opts.prTitle || '').trim() || 'Pull request';
   const prBody = String(opts.prBody || '').trim();
+  /** 测试可注入；生产默认走真实 git push */
+  const runGitExec =
+    typeof opts.gitExecAsync === 'function' ? opts.gitExecAsync : gitExecAsync;
 
   if (!layerId) {
     return { httpStatus: 400, payload: { ok: false, detail: 'layer_id 无效' } };
@@ -499,14 +345,7 @@ export async function runLayerGithubOauthAccessPush(opts) {
           `oauth layer_id=${layerId} slug=${slug} rel_prefix=${String(row.relPrefix || '').slice(0, 160)} token=missing`,
         );
         repos.push(item);
-        return {
-          httpStatus: 400,
-          payload: {
-            ok: false,
-            detail: `推送失败（${slug}）：${item.detail}`,
-            github_oauth_multirepo: { repos },
-          },
-        };
+        continue;
       }
       const ask = askpassForToken(
         repoToken,
@@ -527,7 +366,7 @@ export async function runLayerGithubOauthAccessPush(opts) {
         `oauth layer_id=${layerId} slug=${slug} rel_prefix=${String(row.relPrefix || '').slice(0, 160)} run ${cmdLine}`,
       );
       try {
-        await gitExecAsync(pushArgs, row.workdir, pushEnv);
+        await runGitExec(pushArgs, row.workdir, pushEnv);
         item.push_ok = true;
         // URL remote 推送不会更新 origin/<branch>；对齐 @{u}..HEAD 以便层快照 ahead 归零
         markOriginRemoteTrackingToHead(row.workdir, dstRef);
@@ -541,14 +380,7 @@ export async function runLayerGithubOauthAccessPush(opts) {
           `oauth layer_id=${layerId} slug=${slug} rel_prefix=${String(row.relPrefix || '').slice(0, 160)} git_push fail cmd=${cmdLine} err=${String(e.message || e).slice(0, 800)}`,
         );
         repos.push(item);
-        return {
-          httpStatus: 400,
-          payload: {
-            ok: false,
-            detail: `推送失败（${slug}）：${item.detail}`,
-            github_oauth_multirepo: { repos },
-          },
-        };
+        continue;
       }
 
       if (provider === 'github' && baseName && headName && baseName !== headName) {
@@ -607,14 +439,19 @@ export async function runLayerGithubOauthAccessPush(opts) {
     }
   }
 
-  const anyPushed = repos.some((r) => r.push_ok);
-  if (!anyPushed) {
-    appendGitPushReqLog(`oauth layer_id=${layerId} fail reason=no_successful_push`);
+  // 凡 workdirNeedsPush 的仓均须 push_ok；单仓失败不中断其余仓，结束时汇总成败明细
+  const pushedOk = repos.filter((r) => r.push_ok);
+  const notOk = repos.filter((r) => !r.push_ok);
+  if (notOk.length) {
+    const detail = formatOauthMultiRepoPushDetail(repos);
+    appendGitPushReqLog(
+      `oauth layer_id=${layerId} fail reason=${pushedOk.length ? 'partial_push' : 'no_successful_push'} ok=${pushedOk.length} failed=${notOk.length}`,
+    );
     return {
       httpStatus: 400,
       payload: {
         ok: false,
-        detail: '层内未发现可供 OAuth 推送的 Git 远程仓库（请确认 oauth_auth_by_repo 与 origin 地址一致）',
+        detail,
         github_oauth_multirepo: { repos },
       },
     };
