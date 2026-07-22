@@ -170,6 +170,7 @@ Dockerfile 基于 **ubuntu:24.04**（可通过构建参数 `BASE_IMAGE` / 环境
 |------|------|------|
 | `POST` | `/api/jobs/{job_id}/interrupt` | 向子进程发送 `SIGTERM`；运行中记为 `interrupted`。 |
 | `POST` | `/api/task-lifecycle/shutdown` | 终态优雅关停：中断 running/pending jobs → layer-graph-push → `request-machine-release` → 退出进程；立即 **202**。 |
+| `POST` | `/api/task-lifecycle/closing-soon` | 排队窗口结束前预告（不中断、不释放）；立即 **202**，记录 `minutes_remaining` / `reason`。 |
 | `POST` | `/api/jobs/{job_id}/redo` | **501**，正文含 `detail` 说明（未实现删层重建并重跑）。 |
 | `POST` | `/api/jobs/{job_id}/continue` | **501**（未实现中断后继续）。 |
 | `DELETE` | `/api/jobs/{job_id}` | 删除任务记录并删除该任务对应可写层目录（实现见 `deleteJob`）。 |

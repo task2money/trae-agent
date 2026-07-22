@@ -283,6 +283,17 @@ export function registerConfigJobsRoutes(api, { upload }) {
       });
   });
 
+  api.post('/task-lifecycle/closing-soon', (req, res) => {
+    void import('./taskLifecycleClosingSoon.mjs')
+      .then(({ recordClosingSoon }) => {
+        res.status(202).json(recordClosingSoon(req.body || {}));
+      })
+      .catch((e) => {
+        console.error(`[onlineServiceJS] task-lifecycle/closing-soon failed: ${e?.message || e}`);
+        res.status(500).json({ detail: String(e?.message || e) });
+      });
+  });
+
   api.delete('/jobs/:job_id', (req, res) => {
     try {
       res.json(deleteJob(req.params.job_id));
