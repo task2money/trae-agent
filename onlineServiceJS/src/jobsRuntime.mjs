@@ -175,6 +175,15 @@ export async function createJob(body) {
     auto_run_commit_message: body.auto_run_commit_message
       ? String(body.auto_run_commit_message).trim()
       : null,
+    mounted_agent_comment_id: body.mounted_agent_comment_id
+      ? String(body.mounted_agent_comment_id).trim()
+      : body.at_mention_agent_comment_id
+        ? String(body.at_mention_agent_comment_id).trim()
+        : null,
+    mounted_parent_comment_id: body.mounted_parent_comment_id
+      ? String(body.mounted_parent_comment_id).trim()
+      : null,
+    at_mention_run: Boolean(body.at_mention_run),
   };
   jobs.set(id, rec);
   saveState();

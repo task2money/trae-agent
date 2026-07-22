@@ -171,8 +171,17 @@ export async function maybeStartAutoRunFirstInstruction(opts) {
     return null;
   }
 
+  const mountAgentId = String(detail?.at_mention_run?.agent_comment_id || '').trim();
+  const mountParentId = String(detail?.at_mention_run?.parent_comment_id || '').trim();
+  const mountFromAutoRun =
+    String(detail?.at_mention_run?.source || '').trim().toLowerCase() === 'auto_run';
+
   emitRuntimeEvent('AUTO_RUN_FIRST_INSTRUCTION_START', {
-    fields: { layer_id: layerId, command_len: command.length },
+    fields: {
+      layer_id: layerId,
+      command_len: command.length,
+      mounted_agent_comment_id: mountFromAutoRun ? mountAgentId : '',
+    },
     consoleLine: `[onlineServiceJS] AUTO_RUN_FIRST_INSTRUCTION_START layer_id=${layerId} command_len=${command.length}`,
   });
   const rec = await createJobFn({
@@ -181,6 +190,12 @@ export async function maybeStartAutoRunFirstInstruction(opts) {
     repo_layer_id: layerId,
     auto_run_first: true,
     auto_run_commit_message: String(title || '').trim() || 'auto_run',
+    ...(mountFromAutoRun && mountAgentId
+      ? {
+          mounted_agent_comment_id: mountAgentId,
+          mounted_parent_comment_id: mountParentId,
+        }
+      : {}),
   });
   writeAutoRunFirstJobMarker(rec?.id, fsApi);
   emitRuntimeEvent('AUTO_RUN_FIRST_INSTRUCTION_STARTED', {

@@ -4,6 +4,7 @@
 import { lastBootstrapTaskDetail } from './bootstrapState.mjs';
 import { collectRepoBranchPlans } from './bootstrapWorkBranch.mjs';
 import { runAutoRunDelivery, shouldSkipAutoRunDelivery } from './autoRunOrchestration.mjs';
+import { backfillAutoRunPrToAgentComment } from './autoRunPrBackfill.mjs';
 
 /**
  * 与 bootstrap 工作分支解析一致：task.target_branch → branch_strategy.work_branch_name → target_branch_name。
@@ -46,6 +47,24 @@ export async function triggerAutoRunDeliveryForJob(rec, deps = {}) {
       await mirrorFn();
     } catch {
       /* 层图同步失败不阻断交付结果 */
+    }
+  }
+  if (result?.ok) {
+    const agentCommentId =
+      String(rec?.mounted_agent_comment_id || '').trim() ||
+      String(detail?.at_mention_run?.agent_comment_id || '').trim();
+    const source = String(detail?.at_mention_run?.source || '').trim().toLowerCase();
+    if (agentCommentId && (source === 'auto_run' || rec?.auto_run_first)) {
+      const backfillFn = deps.backfillAutoRunPrToAgentComment || backfillAutoRunPrToAgentComment;
+      try {
+        result.pr_backfill = await backfillFn({
+          agentCommentId,
+          pushResult: result.pushResult,
+          skippedClean: Boolean(result.skipped_clean),
+        });
+      } catch (e) {
+        result.pr_backfill = { ok: false, detail: String(e?.message || e).slice(0, 400) };
+      }
     }
   }
   return result;

@@ -52,6 +52,38 @@ test('triggerAutoRunDeliveryForJob passes identities and remirrors', async () =>
   assert.equal(mirrors.length, 1);
 });
 
+test('triggerAutoRunDeliveryForJob backfills PR into mounted agent comment', async () => {
+  let backfillOpts = null;
+  const result = await triggerAutoRunDeliveryForJob(
+    {
+      layer_id: 'L2',
+      auto_run_first: true,
+      auto_run_commit_message: 't',
+      mounted_agent_comment_id: 'agent-42',
+    },
+    {
+      lastBootstrapTaskDetail: {
+        task: { title: 'T', target_branch: 'feat/x', auto_run: true },
+        at_mention_run: { source: 'auto_run', agent_comment_id: 'agent-42' },
+      },
+      runAutoRunDelivery: async () => ({
+        ok: true,
+        pushResult: {
+          payload: { repos: [{ pr: { html_url: 'https://github.com/acme/x/pull/9' } }] },
+        },
+      }),
+      backfillAutoRunPrToAgentComment: async (opts) => {
+        backfillOpts = opts;
+        return { ok: true, urls: ['https://github.com/acme/x/pull/9'] };
+      },
+    },
+  );
+  assert.equal(result.ok, true);
+  assert.equal(backfillOpts.agentCommentId, 'agent-42');
+  assert.equal(backfillOpts.pushResult.payload.repos[0].pr.html_url, 'https://github.com/acme/x/pull/9');
+  assert.equal(result.pr_backfill?.ok, true);
+});
+
 test('retryPendingAutoRunDeliveries only retries unfinished auto_run_first completed jobs', async () => {
   const triggered = [];
   const out = await retryPendingAutoRunDeliveries({
