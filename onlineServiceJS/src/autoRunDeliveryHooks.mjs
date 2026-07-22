@@ -61,6 +61,7 @@ export async function triggerAutoRunDeliveryForJob(rec, deps = {}) {
           agentCommentId,
           pushResult: result.pushResult,
           skippedClean: Boolean(result.skipped_clean),
+          priorAssistantResponse: String(rec?.output || '').trim(),
         });
       } catch (e) {
         result.pr_backfill = { ok: false, detail: String(e?.message || e).slice(0, 400) };

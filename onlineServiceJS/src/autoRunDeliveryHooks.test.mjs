@@ -60,6 +60,7 @@ test('triggerAutoRunDeliveryForJob backfills PR into mounted agent comment', asy
       auto_run_first: true,
       auto_run_commit_message: 't',
       mounted_agent_comment_id: 'agent-42',
+      output: 'job stdout',
     },
     {
       lastBootstrapTaskDetail: {
@@ -80,6 +81,7 @@ test('triggerAutoRunDeliveryForJob backfills PR into mounted agent comment', asy
   );
   assert.equal(result.ok, true);
   assert.equal(backfillOpts.agentCommentId, 'agent-42');
+  assert.equal(backfillOpts.priorAssistantResponse, 'job stdout');
   assert.equal(backfillOpts.pushResult.payload.repos[0].pr.html_url, 'https://github.com/acme/x/pull/9');
   assert.equal(result.pr_backfill?.ok, true);
 });

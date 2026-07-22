@@ -6,6 +6,11 @@ import { bootstrapCloneLayerId } from './bootstrapState.mjs';
 import { assertReposLayoutReadyForJobs } from './bootstrapCloneLayoutSeal.mjs';
 import { normalizeJobCommandEnv } from './normalizeJobCommandEnv.mjs';
 import { triggerAutoRunDeliveryForJob } from './autoRunDeliveryHooks.mjs';
+import { completeMountedAgentComment } from './autoRunPrBackfill.mjs';
+import {
+  createMountedAgentChunkBuffer,
+  failMountedAgentComment,
+} from './mountedAgentCommentStream.mjs';
 import {
   configFilePath,
   jobLogsTaeJsonDir,
@@ -334,18 +339,28 @@ function runJobAsync(rec, workDir) {
       );
     }
   }
+  const mountedAgentId = String(rec.mounted_agent_comment_id || '').trim();
+  const agentChunkBuf = mountedAgentId
+    ? createMountedAgentChunkBuffer({ flushMs: 250, maxChars: 2048 })
+    : null;
   try {
     proc.stdout?.on('data', (c) => {
       const t = c.toString();
       rec.output = (rec.output || '') + t;
       appendExecStream('job', rec.id, t);
       recordJobEvent(rec.id, 'chunk', t);
+      if (agentChunkBuf && mountedAgentId) {
+        void agentChunkBuf.push(mountedAgentId, t);
+      }
     });
     proc.stderr?.on('data', (c) => {
       const t = c.toString();
       rec.output = (rec.output || '') + t;
       appendExecStream('job', rec.id, t);
       recordJobEvent(rec.id, 'chunk', t);
+      if (agentChunkBuf && mountedAgentId) {
+        void agentChunkBuf.push(mountedAgentId, t);
+      }
     });
   } catch {
     /* ignore */
@@ -390,13 +405,47 @@ function runJobAsync(rec, workDir) {
     if (!wasInterrupted) {
       void drainQueuedJobsForLayer(rec.layer_id, rec.id);
     }
-    if (!wasInterrupted && rec.status === 'completed' && rec.auto_run_first) {
-      void triggerAutoRunDeliveryForJobAndMirror(rec).catch((e) => {
-        console.error(
-          `[jobsRuntime] AUTO_RUN_DELIVERY unexpected error: ${String(e?.message || e).slice(0, 400)}`,
-        );
-      });
-    }
+    void (async () => {
+      if (agentChunkBuf) {
+        try {
+          await agentChunkBuf.flush();
+        } catch {
+          /* ignore */
+        }
+      }
+      if (!mountedAgentId || wasInterrupted) return;
+      if (rec.status === 'completed') {
+        const text = String(rec.output || '').trim();
+        if (text) {
+          try {
+            await completeMountedAgentComment({
+              agentCommentId: mountedAgentId,
+              assistantResponse: text,
+            });
+          } catch {
+            /* soft-fail */
+          }
+        }
+      } else if (rec.status === 'failed') {
+        try {
+          await failMountedAgentComment({
+            agentCommentId: mountedAgentId,
+            detail: `job exit_code=${code}`,
+          });
+        } catch {
+          /* soft-fail */
+        }
+      }
+      if (rec.status === 'completed' && rec.auto_run_first) {
+        try {
+          await triggerAutoRunDeliveryForJobAndMirror(rec);
+        } catch (e) {
+          console.error(
+            `[jobsRuntime] AUTO_RUN_DELIVERY unexpected error: ${String(e?.message || e).slice(0, 400)}`,
+          );
+        }
+      }
+    })();
   });
   proc.on('error', (e) => {
     try {
@@ -414,6 +463,24 @@ function runJobAsync(rec, workDir) {
     broadcast({ type: 'job_finished', job_id: rec.id, status: 'failed' });
     void mirrorLayerGraphToTaskCloudSSE().catch(() => {});
     void drainQueuedJobsForLayer(rec.layer_id, rec.id);
+    void (async () => {
+      if (agentChunkBuf) {
+        try {
+          await agentChunkBuf.flush();
+        } catch {
+          /* ignore */
+        }
+      }
+      if (!mountedAgentId) return;
+      try {
+        await failMountedAgentComment({
+          agentCommentId: mountedAgentId,
+          detail: String(e?.message || e).slice(0, 500),
+        });
+      } catch {
+        /* soft-fail */
+      }
+    })();
   });
 }
 

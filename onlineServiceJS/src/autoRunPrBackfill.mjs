@@ -139,10 +139,12 @@ export async function backfillAutoRunPrToAgentComment(opts = {}) {
     return { ok: false, skipped: true, reason: 'no_agent_comment_id' };
   }
   const urls = extractPrUrlsFromPushResult(opts?.pushResult);
-  const text = composeAutoRunPrBackfillReply({
+  const prText = composeAutoRunPrBackfillReply({
     urls,
     skippedClean: Boolean(opts?.skippedClean),
   });
+  const prior = String(opts?.priorAssistantResponse || '').trim();
+  const text = prior ? `${prior}\n\n${prText}` : prText;
   const completeFn = opts?.completeFn || completeMountedAgentComment;
   const result = await completeFn({
     agentCommentId,

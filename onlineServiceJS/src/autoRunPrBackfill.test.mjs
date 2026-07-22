@@ -63,3 +63,21 @@ test('backfillAutoRunPrToAgentComment skips without agent id', async () => {
   const out = await backfillAutoRunPrToAgentComment({ agentCommentId: '' });
   assert.equal(out.skipped, true);
 });
+
+test('backfillAutoRunPrToAgentComment appends PR after prior stream text', async () => {
+  let saw = null;
+  const out = await backfillAutoRunPrToAgentComment({
+    agentCommentId: 'agent-1',
+    priorAssistantResponse: 'streamed stdout',
+    pushResult: {
+      payload: { repos: [{ pr: { html_url: 'https://github.com/acme/demo/pull/3' } }] },
+    },
+    completeFn: async (opts) => {
+      saw = opts;
+      return { ok: true };
+    },
+  });
+  assert.equal(out.ok, true);
+  assert.match(saw.assistantResponse, /^streamed stdout\n\n/);
+  assert.match(saw.assistantResponse, /pull\/3/);
+});
