@@ -41,6 +41,34 @@ test('runPostBootstrapAgentKickoff prefers valid at_mention over auto_run', asyn
   assert.equal(calls[0].auto_run_first, undefined);
 });
 
+test('runPostBootstrapAgentKickoff uses auto_run when at_mention source is auto_run', async () => {
+  tmpState();
+  const calls = [];
+  const out = await runPostBootstrapAgentKickoff({
+    detail: {
+      at_mention_run: {
+        source: 'auto_run',
+        run_id: 'agent_ar',
+        parent_comment_id: 'c_parent',
+        agent_comment_id: 'agent_ar',
+        trigger_comment: { content: '【自动运行】\nAuto title' },
+      },
+      task: { auto_run: true, title: 'Auto title', description: 'Auto desc' },
+    },
+    layerId: 'layer_ar',
+    createJobFn: async (body) => {
+      calls.push(body);
+      return { id: 'job_ar_mount', layer_id: 'layer_ar' };
+    },
+  });
+  assert.equal(out.kind, 'auto_run');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].auto_run_first, true);
+  assert.equal(calls[0].mounted_agent_comment_id, 'agent_ar');
+  assert.equal(calls[0].mounted_parent_comment_id, 'c_parent');
+  assert.match(String(calls[0].command), /Auto title/);
+});
+
 test('runPostBootstrapAgentKickoff falls back to auto_run when at_mention pack invalid', async () => {
   tmpState();
   const calls = [];

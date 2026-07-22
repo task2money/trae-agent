@@ -31,7 +31,9 @@ export async function runPostBootstrapAgentKickoff(opts) {
     throw new Error('createJobFn required');
   }
 
-  if (detailHasAtMentionRun(detail)) {
+  const atSource = String(detail?.at_mention_run?.source || '').trim().toLowerCase();
+  // auto_run 合成的 @ 评论：走首指令 + 挂载 agent，不走用户 at_mention job。
+  if (detailHasAtMentionRun(detail) && atSource !== 'auto_run') {
     const normalized = normalizeAtMentionContextPack(detail);
     const command = normalized.ok ? composeAtMentionCommand(normalized.pack) : '';
     if (normalized.ok && command) {
