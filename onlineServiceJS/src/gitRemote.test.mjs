@@ -15,8 +15,8 @@ test('gitSshFromHttps: github https 转 ssh', () => {
 });
 
 test('parseGitSshRepoUrl: SCP 风格', () => {
-  assert.deepEqual(parseGitSshRepoUrl('git@183.250.1.132:ljy124818167/somanyad.git'), {
-    host: '183.250.1.132',
+  assert.deepEqual(parseGitSshRepoUrl('git@gitlab.daydaymoney.com:ljy124818167/somanyad.git'), {
+    host: 'gitlab.daydaymoney.com',
     path: 'ljy124818167/somanyad',
   });
 });
@@ -30,7 +30,7 @@ test('normalizeRepoUrlForHttpsClone: 已是 https 保持', () => {
 
 test('normalizeRepoUrlForHttpsClone: 优先 https_clone_url', () => {
   assert.equal(
-    normalizeRepoUrlForHttpsClone('git@183.250.1.132:ljy124818167/somanyad.git', {
+    normalizeRepoUrlForHttpsClone('git@gitlab.daydaymoney.com:ljy124818167/somanyad.git', {
       httpsCloneUrl: 'http://183.250.1.132:8012/ljy124818167/somanyad',
     }),
     'http://183.250.1.132:8012/ljy124818167/somanyad',
@@ -50,8 +50,8 @@ test('normalizeRepoUrlForHttpsClone: 公有托管转 https', () => {
 
 test('normalizeRepoUrlForHttpsClone: 自托管无 website 时保留 SSH（避免错端口）', () => {
   assert.equal(
-    normalizeRepoUrlForHttpsClone('git@183.250.1.132:ljy124818167/somanyad.git'),
-    'git@183.250.1.132:ljy124818167/somanyad.git',
+    normalizeRepoUrlForHttpsClone('git@gitlab.daydaymoney.com:ljy124818167/somanyad.git'),
+    'git@gitlab.daydaymoney.com:ljy124818167/somanyad.git',
   );
 });
 

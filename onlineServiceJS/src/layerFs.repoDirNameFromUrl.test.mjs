@@ -11,18 +11,18 @@ describe('repoDirNameFromUrl', () => {
 
   it('parses scp-style urls', () => {
     assert.equal(
-      repoDirNameFromUrl('git@183.250.1.132:ljy124818167/somanyad.git'),
+      repoDirNameFromUrl('git@gitlab.daydaymoney.com:ljy124818167/somanyad.git'),
       'somanyad',
     );
     assert.equal(
-      repoDirNameFromUrl('git@183.250.1.132:ljy124818167/somanyad-emailD.git'),
+      repoDirNameFromUrl('git@gitlab.daydaymoney.com:ljy124818167/somanyad-emailD.git'),
       'somanyad-emailD',
     );
   });
 
   it('keeps distinct names for sibling repos', () => {
-    const a = repoDirNameFromUrl('git@183.250.1.132:ljy124818167/somanyad.git');
-    const b = repoDirNameFromUrl('git@183.250.1.132:ljy124818167/somanyad-emailD.git');
+    const a = repoDirNameFromUrl('git@gitlab.daydaymoney.com:ljy124818167/somanyad.git');
+    const b = repoDirNameFromUrl('git@gitlab.daydaymoney.com:ljy124818167/somanyad-emailD.git');
     assert.notEqual(a, b);
   });
 });
