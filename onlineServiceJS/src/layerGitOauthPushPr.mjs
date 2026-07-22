@@ -42,11 +42,42 @@ export async function createGithubPullRequest({ owner, repo, head, base, accessT
     );
     throw e;
   }
-  const text = await r.text();
+  let text = await r.text();
   if (isDebugAgentEnabled()) {
     appendOutboundReqLog(
       `DEBUG_AGENT outbound response method=POST url=${apiUrl} status=${r.status} headers=${debugAgentStringify(Object.fromEntries(r.headers.entries()))} body=${text}`,
     );
+  }
+  // 已存在同 head/base 的 PR：查找并复用（对齐 GitLab MR 409 路径）
+  if (r.status === 422) {
+    const listUrl =
+      `https://api.github.com/repos/${owner}/${repo}/pulls` +
+      `?state=open&head=${encodeURIComponent(`${owner}:${head}`)}&base=${encodeURIComponent(base)}`;
+    try {
+      const lr = await fetch(listUrl, {
+        method: 'GET',
+        headers: {
+          Accept: 'application/vnd.github+json',
+          Authorization: `Bearer ${accessToken}`,
+          'X-GitHub-Api-Version': '2022-11-28',
+        },
+      });
+      const lt = await lr.text();
+      let lj = null;
+      try {
+        lj = JSON.parse(lt);
+      } catch {
+        /* ignore */
+      }
+      if (lr.ok && Array.isArray(lj) && lj.length > 0 && lj[0]?.html_url) {
+        appendOutboundReqLog(
+          `github-api POST ${safeUrl} -> HTTP ${r.status} (reuse existing PR) ${Date.now() - t0}ms`,
+        );
+        return { ok: true, status: 200, json: lj[0], text: lt.slice(0, 2000), reused: true };
+      }
+    } catch {
+      /* fall through */
+    }
   }
   appendOutboundReqLog(`github-api POST ${safeUrl} -> HTTP ${r.status} ${Date.now() - t0}ms`);
   let json = null;
