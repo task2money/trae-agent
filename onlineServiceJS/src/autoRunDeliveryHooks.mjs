@@ -5,6 +5,7 @@ import { lastBootstrapTaskDetail } from './bootstrapState.mjs';
 import { collectRepoBranchPlans } from './bootstrapWorkBranch.mjs';
 import { runAutoRunDelivery, shouldSkipAutoRunDelivery } from './autoRunOrchestration.mjs';
 import { backfillAutoRunPrToAgentComment } from './autoRunPrBackfill.mjs';
+import { ensureEditRunMountedAgentComment } from './editRunAgentComment.mjs';
 
 /**
  * 与 bootstrap 工作分支解析一致：task.target_branch → branch_strategy.work_branch_name → target_branch_name。
@@ -22,6 +23,9 @@ export function resolveAutoRunDeliveryTargetBranch(detail) {
  *   runAutoRunDelivery?: typeof runAutoRunDelivery,
  *   mirrorLayerGraphToTaskCloudSSE?: () => Promise<unknown>,
  *   lastBootstrapTaskDetail?: object|null,
+ *   ensureEditRunMountedAgentComment?: typeof ensureEditRunMountedAgentComment,
+ *   backfillAutoRunPrToAgentComment?: typeof backfillAutoRunPrToAgentComment,
+ *   persistJobMount?: (rec: object, agentId: string) => void,
  * }} [deps]
  */
 export async function triggerAutoRunDeliveryForJob(rec, deps = {}) {
@@ -30,10 +34,11 @@ export async function triggerAutoRunDeliveryForJob(rec, deps = {}) {
     : lastBootstrapTaskDetail;
   const deliveryFn = deps.runAutoRunDelivery || runAutoRunDelivery;
   const mirrorFn = deps.mirrorLayerGraphToTaskCloudSSE;
+  const isEditRun = Boolean(rec?.edit_run_delivery);
   const commitMessage =
     String(rec?.auto_run_commit_message || '').trim() ||
     String(detail?.task?.title || '').trim() ||
-    'auto_run';
+    (isEditRun ? 'edit_run' : 'auto_run');
   const identities = Array.isArray(detail?.repo_git_identities) ? detail.repo_git_identities : [];
   const targetBranch = resolveAutoRunDeliveryTargetBranch(detail);
   const result = await deliveryFn({
@@ -41,6 +46,9 @@ export async function triggerAutoRunDeliveryForJob(rec, deps = {}) {
     commitMessage,
     identities,
     targetBranch,
+    ...(isEditRun
+      ? { force: true, editRunJobId: String(rec?.id || '').trim() }
+      : {}),
   });
   if (typeof mirrorFn === 'function') {
     try {
@@ -50,11 +58,28 @@ export async function triggerAutoRunDeliveryForJob(rec, deps = {}) {
     }
   }
   if (result?.ok) {
+    if (isEditRun) {
+      const ensureFn = deps.ensureEditRunMountedAgentComment || ensureEditRunMountedAgentComment;
+      try {
+        await ensureFn(rec, {
+          persistMount: (agentId) => {
+            if (typeof deps.persistJobMount === 'function') {
+              deps.persistJobMount(rec, agentId);
+            }
+          },
+        });
+      } catch (e) {
+        result.agent_ensure = { ok: false, detail: String(e?.message || e).slice(0, 400) };
+      }
+    }
     const agentCommentId =
       String(rec?.mounted_agent_comment_id || '').trim() ||
       String(detail?.at_mention_run?.agent_comment_id || '').trim();
     const source = String(detail?.at_mention_run?.source || '').trim().toLowerCase();
-    if (agentCommentId && (source === 'auto_run' || rec?.auto_run_first)) {
+    const shouldBackfill =
+      Boolean(agentCommentId) &&
+      (source === 'auto_run' || Boolean(rec?.auto_run_first) || isEditRun);
+    if (shouldBackfill) {
       const backfillFn = deps.backfillAutoRunPrToAgentComment || backfillAutoRunPrToAgentComment;
       try {
         result.pr_backfill = await backfillFn({
@@ -62,6 +87,7 @@ export async function triggerAutoRunDeliveryForJob(rec, deps = {}) {
           pushResult: result.pushResult,
           skippedClean: Boolean(result.skipped_clean),
           priorAssistantResponse: String(rec?.output || '').trim(),
+          kind: isEditRun ? 'edit_run' : 'auto_run',
         });
       } catch (e) {
         result.pr_backfill = { ok: false, detail: String(e?.message || e).slice(0, 400) };

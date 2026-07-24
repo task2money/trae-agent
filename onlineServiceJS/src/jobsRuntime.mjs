@@ -177,6 +177,10 @@ export async function createJob(body) {
     command_env: body.env && typeof body.env === 'object' ? body.env : null,
     prior_context_job_id: prior_context_job_id || null,
     auto_run_first: Boolean(body.auto_run_first),
+    edit_run_delivery: Boolean(body.edit_run_delivery),
+    edit_run_installed_image_id: body.edit_run_installed_image_id
+      ? String(body.edit_run_installed_image_id).trim()
+      : null,
     auto_run_commit_message: body.auto_run_commit_message
       ? String(body.auto_run_commit_message).trim()
       : null,
@@ -436,7 +440,7 @@ function runJobAsync(rec, workDir) {
           /* soft-fail */
         }
       }
-      if (rec.status === 'completed' && rec.auto_run_first) {
+      if (rec.status === 'completed' && (rec.auto_run_first || rec.edit_run_delivery)) {
         try {
           await triggerAutoRunDeliveryForJobAndMirror(rec);
         } catch (e) {
@@ -488,6 +492,16 @@ function runJobAsync(rec, workDir) {
 export async function triggerAutoRunDeliveryForJobAndMirror(rec) {
   return triggerAutoRunDeliveryForJob(rec, {
     mirrorLayerGraphToTaskCloudSSE,
+    persistJobMount: (jobRec, agentId) => {
+      if (jobRec && agentId) {
+        jobRec.mounted_agent_comment_id = String(agentId).trim();
+        try {
+          saveState();
+        } catch {
+          /* ignore */
+        }
+      }
+    },
   });
 }
 

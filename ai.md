@@ -24,7 +24,7 @@
 - 优先级：高
 
 ##### 工作目录与命令原文
-- 描述：`buildDocker.sh` 位于 `onlineServiceJS/`。执行推送时 **cwd 必须为** `trae-agent/onlineServiceJS`，命令保持用户约定原文：`DOCKER_PUSH=1 ./buildDocker.sh`（亦可用等价的 `--push`，但默认按上述环境变量形式执行）。脚本默认仓库见 `buildDocker.sh` 头部注释中的 `DOCKER_REGISTRY_REPOSITORY`。
+- 描述：`buildDocker.sh` 位于 `onlineServiceJS/`。执行推送时 **cwd 必须为** `trae-agent/onlineServiceJS`，命令保持用户约定原文：`DOCKER_PUSH=1 ./buildDocker.sh`（亦可用等价的 `--push`，但默认按上述环境变量形式执行）。**默认仅推送 linux/amd64**；需 amd64+arm64 时用 `DOCKER_PLATFORMS=all DOCKER_PUSH=1 ./buildDocker.sh`。脚本默认仓库见 `buildDocker.sh` 头部注释中的 `DOCKER_REGISTRY_REPOSITORY`。
 - 适用场景：执行镜像构建与推送时
 - 优先级：高
 
@@ -58,4 +58,5 @@
   3. 新版本规则覆盖旧版本规则
 
 ## 变更日志
+- 2026-07-23：说明默认仅推 x86；全架构需 `DOCKER_PLATFORMS=all`
 - 2026-07-12：版本 1.0.0 - 初始创建，要求 trae-agent 提交后使用 `DOCKER_PUSH=1 ./buildDocker.sh` 推送镜像

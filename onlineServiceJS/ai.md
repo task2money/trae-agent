@@ -19,6 +19,12 @@
   DOCKER_PUSH=1 ./buildDocker.sh
   ```
 
+  默认只构建并推送 **linux/amd64（x86）**。需要同时推送 arm64 时显式：
+
+  ```bash
+  DOCKER_PLATFORMS=all DOCKER_PUSH=1 ./buildDocker.sh
+  ```
+
   父目录总则见 [`../ai.md`](../ai.md)。禁止只提交不推送导致 registry 镜像落后于源码。
 - 适用场景：修改本目录源码/Dockerfile/依赖并提交或交付时
 - 优先级：高
@@ -65,5 +71,6 @@
   3. 新版本规则覆盖旧版本规则
 
 ## 变更日志
+- 2026-07-23：`buildDocker.sh` 默认仅推 x86；`DOCKER_PLATFORMS=all` 才双架构
 - 2026-07-19：补充 access 主动 refresh-access 最佳实践（proactiveAccessRefresh）
 - 2026-07-12：版本 1.0.0 - 初始创建，强化提交后 Docker 推送提醒

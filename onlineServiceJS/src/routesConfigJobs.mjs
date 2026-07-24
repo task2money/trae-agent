@@ -35,6 +35,96 @@ import {
 } from './layerFs.mjs';
 
 
+/**
+ * Redo endpoint core logic — exported for testability.
+ * @param {string} jobId
+ * @param {{ getJob: (id:string) => object|null, createJob: (body:object) => Promise<object>, jobToApiDict: (rec:object) => object }} deps
+ * @returns {Promise<{status:number, body:object}>}
+ */
+export async function handleJobRedo(jobId, deps) {
+  const { getJob, createJob, jobToApiDict } = deps;
+  const original = getJob(jobId);
+  if (!original) {
+    return { status: 404, body: { detail: 'job not found' } };
+  }
+  if (original.command_kind === 'clone') {
+    return { status: 400, body: { detail: 'clone 任务不支持重新执行' } };
+  }
+  const activeStatuses = new Set(['pending', 'running']);
+  if (activeStatuses.has(String(original.status || '').trim().toLowerCase())) {
+    return { status: 400, body: { detail: '任务正在执行中，无法重新执行' } };
+  }
+  const layerId = String(original.layer_id || '').trim();
+  if (!layerId) {
+    return { status: 400, body: { detail: 'job has no layer_id' } };
+  }
+  const mountedAgentId = String(original.mounted_agent_comment_id || '').trim();
+  const mountedParentId = String(original.mounted_parent_comment_id || '').trim();
+  const commitMsg =
+    String(original.auto_run_commit_message || '').trim()
+      ? String(original.auto_run_commit_message).trim() + ' (redo)'
+      : String(original.command || '').trim().slice(0, 60) + ' (redo)';
+  const rec = await createJob({
+    parent_job_id: original.id,
+    command: original.command,
+    command_kind: original.command_kind || 'trae',
+    auto_run_first: true,
+    auto_run_commit_message: commitMsg,
+    ...(mountedAgentId
+      ? {
+          mounted_agent_comment_id: mountedAgentId,
+          mounted_parent_comment_id: mountedParentId,
+        }
+      : {}),
+  });
+  return { status: 201, body: jobToApiDict(rec) };
+}
+
+/**
+ * Continue endpoint core logic — exported for testability.
+ * @param {string} jobId
+ * @param {{ getJob: (id:string) => object|null, createJob: (body:object) => Promise<object>, jobToApiDict: (rec:object) => object }} deps
+ * @returns {Promise<{status:number, body:object}>}
+ */
+export async function handleJobContinue(jobId, deps) {
+  const { getJob, createJob, jobToApiDict } = deps;
+  const original = getJob(jobId);
+  if (!original) {
+    return { status: 404, body: { detail: 'job not found' } };
+  }
+  if (String(original.status || '').trim().toLowerCase() !== 'interrupted') {
+    return { status: 400, body: { detail: '仅 interrupted 状态的任务可继续执行' } };
+  }
+  if (original.command_kind === 'clone') {
+    return { status: 400, body: { detail: 'clone 任务不支持继续执行' } };
+  }
+  const layerId = String(original.layer_id || '').trim();
+  if (!layerId) {
+    return { status: 400, body: { detail: 'job has no layer_id' } };
+  }
+  const mountedAgentId = String(original.mounted_agent_comment_id || '').trim();
+  const mountedParentId = String(original.mounted_parent_comment_id || '').trim();
+  const commitMsg =
+    String(original.auto_run_commit_message || '').trim()
+      ? String(original.auto_run_commit_message).trim() + ' (continue)'
+      : String(original.command || '').trim().slice(0, 60) + ' (continue)';
+  const rec = await createJob({
+    repo_layer_id: layerId,
+    command: original.command,
+    command_kind: original.command_kind || 'trae',
+    prior_context_job_id: original.id,
+    auto_run_first: true,
+    auto_run_commit_message: commitMsg,
+    ...(mountedAgentId
+      ? {
+          mounted_agent_comment_id: mountedAgentId,
+          mounted_parent_comment_id: mountedParentId,
+        }
+      : {}),
+  });
+  return { status: 201, body: jobToApiDict(rec) };
+}
+
 export function registerConfigJobsRoutes(api, { upload }) {
   api.get('/events/stream', (req, res) => {
     res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
@@ -302,12 +392,22 @@ export function registerConfigJobsRoutes(api, { upload }) {
     }
   });
 
-  api.post('/jobs/:job_id/redo', (req, res) => {
-    res.status(501).json({ detail: 'onlineServiceJS: redo 尚未实现，请新建任务或在本仓库补齐该端点' });
+  api.post('/jobs/:job_id/redo', async (req, res) => {
+    try {
+      const result = await handleJobRedo(req.params.job_id, { getJob, createJob, jobToApiDict });
+      res.status(result.status).json(result.body);
+    } catch (e) {
+      res.status(400).json({ detail: String(e.message || e) });
+    }
   });
 
-  api.post('/jobs/:job_id/continue', (req, res) => {
-    res.status(501).json({ detail: 'onlineServiceJS: continue 尚未实现' });
+  api.post('/jobs/:job_id/continue', async (req, res) => {
+    try {
+      const result = await handleJobContinue(req.params.job_id, { getJob, createJob, jobToApiDict });
+      res.status(result.status).json(result.body);
+    } catch (e) {
+      res.status(400).json({ detail: String(e.message || e) });
+    }
   });
 
   api.post('/jobs/reset', async (req, res) => {

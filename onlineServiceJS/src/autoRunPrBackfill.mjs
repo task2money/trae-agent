@@ -32,24 +32,27 @@ export function extractPrUrlsFromPushResult(pushResult) {
 }
 
 /**
- * @param {{ urls?: string[], skippedClean?: boolean, detail?: string }} opts
+ * @param {{ urls?: string[], skippedClean?: boolean, detail?: string, kind?: 'auto_run'|'edit_run' }} opts
  */
 export function composeAutoRunPrBackfillReply(opts = {}) {
+  const kind = String(opts.kind || 'auto_run').trim() === 'edit_run' ? 'edit_run' : 'auto_run';
+  const head = kind === 'edit_run' ? '修改指令后执行已完成' : '自动运行已完成';
+  const headDelivery = kind === 'edit_run' ? '修改指令后执行交付已完成' : '自动运行交付已完成';
   const urls = Array.isArray(opts.urls) ? opts.urls.filter(Boolean) : [];
   if (urls.length === 1) {
-    return `自动运行已完成，Pull Request：\n${urls[0]}`;
+    return `${head}，Pull Request：\n${urls[0]}`;
   }
   if (urls.length > 1) {
-    return `自动运行已完成，Pull Requests：\n${urls.map((u, i) => `${i + 1}. ${u}`).join('\n')}`;
+    return `${head}，Pull Requests：\n${urls.map((u, i) => `${i + 1}. ${u}`).join('\n')}`;
   }
   if (opts.skippedClean) {
-    return '自动运行已完成：工作区干净，无需推送或创建 PR。';
+    return `${head}：工作区干净，无需推送或创建 PR。`;
   }
   const detail = String(opts.detail || '').trim();
   if (detail) {
-    return `自动运行交付已完成（未获取到 PR 链接）：${detail.slice(0, 400)}`;
+    return `${headDelivery}（未获取到 PR 链接）：${detail.slice(0, 400)}`;
   }
-  return '自动运行交付已完成（未获取到 PR 链接）。';
+  return `${headDelivery}（未获取到 PR 链接）。`;
 }
 
 /**
@@ -130,6 +133,7 @@ export async function completeMountedAgentComment(opts) {
  *   agentCommentId?: string,
  *   pushResult?: object,
  *   skippedClean?: boolean,
+ *   kind?: 'auto_run'|'edit_run',
  *   completeFn?: typeof completeMountedAgentComment,
  * }} opts
  */
@@ -142,6 +146,7 @@ export async function backfillAutoRunPrToAgentComment(opts = {}) {
   const prText = composeAutoRunPrBackfillReply({
     urls,
     skippedClean: Boolean(opts?.skippedClean),
+    kind: opts?.kind,
   });
   const prior = String(opts?.priorAssistantResponse || '').trim();
   const text = prior ? `${prior}\n\n${prText}` : prText;

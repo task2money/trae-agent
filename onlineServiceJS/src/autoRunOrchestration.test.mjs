@@ -14,6 +14,7 @@ import {
   hasAutoRunDeliveryDone,
   writeAutoRunDeliveryDone,
   shouldSkipAutoRunDelivery,
+  hasEditRunDeliveryDone,
   autoRunFirstJobMarkerPath,
   autoRunDeliveryDonePath,
 } from './autoRunOrchestration.mjs';
@@ -234,4 +235,44 @@ test('marker path helpers write under runtime', () => {
   writeAutoRunDeliveryDone({ push_ok: true });
   assert.equal(hasAutoRunFirstJobMarker(), true);
   assert.equal(hasAutoRunDeliveryDone(), true);
+});
+
+test('runAutoRunDelivery force edit_run ignores global done and uses per-job marker', async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'autorun-edit-'));
+  process.env.ONLINE_PROJECT_STATE_ROOT = tmp;
+  writeAutoRunDeliveryDone({ layer_id: 'L', push_ok: true });
+  assert.equal(shouldSkipAutoRunDelivery(), true);
+  let pushes = 0;
+  const first = await runAutoRunDelivery({
+    layerId: 'layer_edit',
+    force: true,
+    editRunJobId: 'J-edit-1',
+    commitMessage: 'edit',
+    syncRepoIdentitiesToLayer: async () => ({ applied_count: 0, results: [] }),
+    commitLayerChanges: async () => ({ ok: true, committed: 1 }),
+    runLayerOauthRefreshPush: async () => {
+      pushes += 1;
+      return { httpStatus: 200, payload: { ok: true, github_pull_request: { html_url: 'https://pr/1' } } };
+    },
+    aheadDeps: { layerGitRemoteSnapshot: () => ({ is_git: true, ahead: 0 }) },
+  });
+  assert.equal(first.ok, true);
+  assert.equal(pushes, 1);
+  assert.equal(hasEditRunDeliveryDone('J-edit-1'), true);
+  const again = await runAutoRunDelivery({
+    layerId: 'layer_edit',
+    force: true,
+    editRunJobId: 'J-edit-1',
+    syncRepoIdentitiesToLayer: async () => {
+      throw new Error('should not run');
+    },
+    commitLayerChanges: async () => {
+      throw new Error('should not run');
+    },
+    runLayerOauthRefreshPush: async () => {
+      throw new Error('should not run');
+    },
+  });
+  assert.equal(again.skipped, true);
+  assert.equal(again.reason, 'edit_run_done_marker');
 });

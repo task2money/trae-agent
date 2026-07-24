@@ -86,6 +86,52 @@ test('triggerAutoRunDeliveryForJob backfills PR into mounted agent comment', asy
   assert.equal(result.pr_backfill?.ok, true);
 });
 
+test('triggerAutoRunDeliveryForJob edit_run forces delivery and backfills', async () => {
+  const deliveryOpts = [];
+  let backfillOpts = null;
+  let ensureCalled = false;
+  const rec = {
+    id: 'J-edit',
+    layer_id: 'L3',
+    edit_run_delivery: true,
+    auto_run_commit_message: 'fix cmd',
+    mounted_parent_comment_id: 'cmt-p',
+    edit_run_installed_image_id: 'img-1',
+    output: 'edited output',
+  };
+  const result = await triggerAutoRunDeliveryForJob(rec, {
+    lastBootstrapTaskDetail: {
+      task: { title: 'T', target_branch: 'feat/y' },
+      repo_git_identities: [],
+    },
+    runAutoRunDelivery: async (opts) => {
+      deliveryOpts.push(opts);
+      return {
+        ok: true,
+        pushResult: {
+          payload: { github_pull_request: { html_url: 'https://github.com/acme/y/pull/3' } },
+        },
+      };
+    },
+    ensureEditRunMountedAgentComment: async (r) => {
+      ensureCalled = true;
+      r.mounted_agent_comment_id = 'agent-edit';
+      return { ok: true, id: 'agent-edit' };
+    },
+    backfillAutoRunPrToAgentComment: async (opts) => {
+      backfillOpts = opts;
+      return { ok: true, urls: ['https://github.com/acme/y/pull/3'] };
+    },
+  });
+  assert.equal(result.ok, true);
+  assert.equal(deliveryOpts[0].force, true);
+  assert.equal(deliveryOpts[0].editRunJobId, 'J-edit');
+  assert.equal(ensureCalled, true);
+  assert.equal(backfillOpts.agentCommentId, 'agent-edit');
+  assert.equal(backfillOpts.kind, 'edit_run');
+  assert.equal(backfillOpts.priorAssistantResponse, 'edited output');
+});
+
 test('retryPendingAutoRunDeliveries only retries unfinished auto_run_first completed jobs', async () => {
   const triggered = [];
   const out = await retryPendingAutoRunDeliveries({

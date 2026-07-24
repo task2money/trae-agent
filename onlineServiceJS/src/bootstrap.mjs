@@ -1,9 +1,13 @@
+import fs from 'fs';
+import path from 'path';
 import { postJson } from './saasTaskCloud.mjs';
 import { appendOutboundReqLog } from './outboundReqLog.mjs';
 import {
   setBootstrapCloneLayerId,
   setBootstrapRegisterCloneJob,
   setLastBootstrapTaskDetail,
+  bootstrapCloneLayerId,
+  lastBootstrapTaskDetail,
 } from './bootstrapState.mjs';
 import {
   bootstrapStructuredPayload,
@@ -29,6 +33,79 @@ import { persistFeatureParamsEnv } from './bootstrapFeatureParamsPersist.mjs';
 import { runBootstrapTokenExchangeOnly } from './bootstrapTokenExchange.mjs';
 import { ensureStartupEmptyLayer } from './bootstrapStartupEmptyLayer.mjs';
 import { emitRuntimeEvent } from './runtimeEventLog.mjs';
+import { layerPath, layerGitWorkdirRootsForFileListing } from './layerFs.mjs';
+import {
+  repoMatchKeyFromUrl,
+  gitConfigGetSync,
+  gitExec,
+} from './layerGitRouteHelpers.mjs';
+
+/**
+ * 克隆完成后自动将任务配置的各仓库所选 Git 身份写入 git config --local。
+ * 读取 lastBootstrapTaskDetail.parameters.repo_clone_git_identity_details，
+ * 按 repo_match_key 匹配克隆层内各 Git 工作区。
+ */
+async function applyBootstrapCloneGitIdentities() {
+  const detail = lastBootstrapTaskDetail;
+  if (!detail) return;
+  const params = detail?.parameters;
+  if (!params || typeof params !== 'object') return;
+  const identityDetails = params.repo_clone_git_identity_details;
+  if (!identityDetails || typeof identityDetails !== 'object' || !Object.keys(identityDetails).length) {
+    return;
+  }
+
+  const layerId = bootstrapCloneLayerId;
+  if (!layerId) return;
+
+  const root = layerPath(layerId);
+  if (!fs.existsSync(root)) return;
+
+  const roots = layerGitWorkdirRootsForFileListing(layerId);
+  if (!roots.length) return;
+
+  let applied = 0;
+  const byKeyLower = {};
+  for (const [k, v] of Object.entries(identityDetails)) {
+    byKeyLower[String(k).toLowerCase()] = v;
+  }
+
+  for (const { workdir } of roots) {
+    const dotGit = path.join(workdir, '.git');
+    if (!fs.existsSync(dotGit)) continue;
+
+    let originUrl = '';
+    try {
+      originUrl = gitConfigGetSync(['config', '--get', 'remote.origin.url'], workdir);
+    } catch {
+      /* ignore — not a git workdir or no remote */
+    }
+    if (!originUrl) continue;
+
+    const key = repoMatchKeyFromUrl(originUrl).toLowerCase();
+    if (!key) continue;
+
+    const spec = byKeyLower[key];
+    if (!spec || !spec.user_name || !spec.user_email) continue;
+
+    try {
+      await gitExec(['config', '--local', 'user.name', spec.user_name], workdir);
+      await gitExec(['config', '--local', 'user.email', spec.user_email], workdir);
+      applied += 1;
+      console.log(
+        `[onlineServiceJS] BOOTSTRAP git identity auto-applied: key=${key} name=${spec.user_name} email=${spec.user_email}`,
+      );
+    } catch (e) {
+      console.warn(
+        `[onlineServiceJS] BOOTSTRAP git identity sync failed: key=${key} err=${String(e?.message || e)}`,
+      );
+    }
+  }
+
+  if (applied > 0) {
+    appendOutboundReqLog(`bootstrap: git identities auto-synced count=${applied}`);
+  }
+}
 
 /**
  * 容器已监听端口后：拉取任务详情 → 克隆关联仓库 → 拉取并写入 feature YAML。
@@ -106,6 +183,8 @@ export async function runBootstrapAfterListen(ctx) {
           branchPlans,
         ),
       );
+      // 克隆完成后自动将任务配置的各仓库所选 Git 身份写入 git config
+      await applyBootstrapCloneGitIdentities();
     } catch (e) {
       noteBootstrapFailure({
         phase: 'clone',

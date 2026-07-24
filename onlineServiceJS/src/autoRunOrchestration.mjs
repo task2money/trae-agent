@@ -32,6 +32,30 @@ export function autoRunDeliveryDonePath() {
   return path.join(runtimeDir(), 'auto_run_delivery.done');
 }
 
+/** 改后执行交付幂等标志（按 job，避免被全局 auto_run_delivery.done 挡住）。 */
+export function editRunDeliveryDonePath(jobId) {
+  const id = String(jobId || '').trim() || 'unknown';
+  return path.join(runtimeDir(), `edit_run_delivery.${id}.done`);
+}
+
+export function hasEditRunDeliveryDone(jobId, fsApi = fs) {
+  try {
+    return fsApi.existsSync(editRunDeliveryDonePath(jobId));
+  } catch {
+    return false;
+  }
+}
+
+export function writeEditRunDeliveryDone(jobId, payload = {}, fsApi = fs) {
+  const p = editRunDeliveryDonePath(jobId);
+  fsApi.mkdirSync(path.dirname(p), { recursive: true });
+  fsApi.writeFileSync(
+    p,
+    JSON.stringify({ ...payload, job_id: String(jobId || ''), at: new Date().toISOString() }, null, 2),
+    'utf8',
+  );
+}
+
 export function hasAutoRunFirstJobMarker(fsApi = fs) {
   try {
     return fsApi.existsSync(autoRunFirstJobMarkerPath());
@@ -334,6 +358,9 @@ export async function runAutoRunDelivery(opts) {
   const syncFn = opts?.syncRepoIdentitiesToLayer || syncRepoIdentitiesToLayer;
   const commitFn = opts?.commitLayerChanges || commitLayerChanges;
   const maxRetries = Number.isFinite(opts?.maxRetries) ? Number(opts.maxRetries) : 3;
+  const force = Boolean(opts?.force);
+  const editRunJobId = String(opts?.editRunJobId || '').trim();
+  const isEditRun = force && Boolean(editRunJobId);
 
   if (!layerId) {
     emitRuntimeEvent('AUTO_RUN_DELIVERY_FAILED', {
@@ -344,7 +371,15 @@ export async function runAutoRunDelivery(opts) {
     });
     return { ok: false, detail: 'layer_id required' };
   }
-  if (shouldSkipAutoRunDelivery(fsApi)) {
+  if (isEditRun && hasEditRunDeliveryDone(editRunJobId, fsApi)) {
+    emitRuntimeEvent('AUTO_RUN_DELIVERY_SKIP', {
+      message: 'edit_run_done_marker',
+      fields: { reason: 'edit_run_done_marker', layer_id: layerId, job_id: editRunJobId },
+      consoleLine: `[onlineServiceJS] AUTO_RUN_DELIVERY_SKIP reason=edit_run_done_marker layer_id=${layerId} job_id=${editRunJobId}`,
+    });
+    return { ok: true, skipped: true, reason: 'edit_run_done_marker' };
+  }
+  if (!force && shouldSkipAutoRunDelivery(fsApi)) {
     emitRuntimeEvent('AUTO_RUN_DELIVERY_SKIP', {
       message: 'done_marker',
       fields: { reason: 'done_marker', layer_id: layerId },
@@ -352,8 +387,8 @@ export async function runAutoRunDelivery(opts) {
     });
     return { ok: true, skipped: true, reason: 'done_marker' };
   }
-  const retries = readAutoRunDeliveryRetryCount(fsApi);
-  if (retries >= maxRetries) {
+  const retries = isEditRun ? 0 : readAutoRunDeliveryRetryCount(fsApi);
+  if (!isEditRun && retries >= maxRetries) {
     emitRuntimeEvent('AUTO_RUN_DELIVERY_SKIP', {
       level: 'warn',
       message: 'max_retries',
@@ -387,7 +422,7 @@ export async function runAutoRunDelivery(opts) {
     const pushOk = pushHttpOk || cleanSkip;
 
     if (!pushOk) {
-      const n = bumpAutoRunDeliveryRetryCount(fsApi);
+      const n = isEditRun ? 0 : bumpAutoRunDeliveryRetryCount(fsApi);
       emitRuntimeEvent('AUTO_RUN_DELIVERY_FAILED', {
         level: 'warn',
         phase: 'push',
@@ -397,33 +432,40 @@ export async function runAutoRunDelivery(opts) {
           http_status: httpStatus,
           retries: n,
           still_ahead: stillAhead,
+          ...(isEditRun ? { edit_run_job_id: editRunJobId } : {}),
         },
         consoleLine: `[onlineServiceJS] AUTO_RUN_DELIVERY_FAILED layer_id=${layerId} phase=push http_status=${httpStatus} retries=${n} detail=${detail.slice(0, 240)}`,
       });
       return { ok: false, commitResult, pushResult, stillAhead, retries: n };
     }
 
-    writeAutoRunDeliveryDone(
-      {
-        layer_id: layerId,
-        commit: commitResult,
-        push_http_status: httpStatus || (cleanSkip ? 200 : httpStatus),
-        push_ok: true,
-        ...(cleanSkip ? { skipped_clean: true } : {}),
-      },
-      fsApi,
-    );
+    const donePayload = {
+      layer_id: layerId,
+      commit: commitResult,
+      push_http_status: httpStatus || (cleanSkip ? 200 : httpStatus),
+      push_ok: true,
+      ...(cleanSkip ? { skipped_clean: true } : {}),
+    };
+    if (isEditRun) {
+      writeEditRunDeliveryDone(editRunJobId, donePayload, fsApi);
+    } else {
+      writeAutoRunDeliveryDone(donePayload, fsApi);
+    }
     emitRuntimeEvent('AUTO_RUN_DELIVERY_COMPLETE', {
-      fields: { layer_id: layerId, skipped_clean: Boolean(cleanSkip) },
-      consoleLine: `[onlineServiceJS] AUTO_RUN_DELIVERY_COMPLETE layer_id=${layerId}${cleanSkip ? ' skipped_clean=1' : ''}`,
+      fields: {
+        layer_id: layerId,
+        skipped_clean: Boolean(cleanSkip),
+        ...(isEditRun ? { edit_run_job_id: editRunJobId } : {}),
+      },
+      consoleLine: `[onlineServiceJS] AUTO_RUN_DELIVERY_COMPLETE layer_id=${layerId}${cleanSkip ? ' skipped_clean=1' : ''}${isEditRun ? ` edit_run_job_id=${editRunJobId}` : ''}`,
     });
     return { ok: true, commitResult, pushResult, skipped_clean: cleanSkip };
   } catch (e) {
-    const n = bumpAutoRunDeliveryRetryCount(fsApi);
+    const n = isEditRun ? 0 : bumpAutoRunDeliveryRetryCount(fsApi);
     emitRuntimeEvent('AUTO_RUN_DELIVERY_FAILED', {
       level: 'error',
       message: String(e?.message || e).slice(0, 500),
-      fields: { layer_id: layerId, retries: n },
+      fields: { layer_id: layerId, retries: n, ...(isEditRun ? { edit_run_job_id: editRunJobId } : {}) },
       consoleLine: `[onlineServiceJS] AUTO_RUN_DELIVERY_FAILED layer_id=${layerId} retries=${n} detail=${String(e?.message || e).slice(0, 500)}`,
     });
     return { ok: false, detail: String(e?.message || e), retries: n };
