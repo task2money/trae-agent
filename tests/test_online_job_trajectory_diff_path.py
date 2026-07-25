@@ -128,7 +128,7 @@ def test_empty_exact_but_llm_interactions_yield_steps(monkeypatch, tmp_path: Pat
                 "llm_interactions": [
                     {
                         "timestamp": "2026-05-11T00:00:00",
-                        "response": {"content": "thinking…", "model": "deepseek-reasoner"},
+                        "response": {"content": "thinking…", "model": "deepseek-v4-pro"},
                     }
                 ],
             },
