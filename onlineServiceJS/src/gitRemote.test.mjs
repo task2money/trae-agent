@@ -23,17 +23,17 @@ test('parseGitSshRepoUrl: SCP 风格', () => {
 
 test('normalizeRepoUrlForHttpsClone: 已是 https 保持', () => {
   assert.equal(
-    normalizeRepoUrlForHttpsClone('http://183.250.1.132:8012/ljy/somanyad.git'),
-    'http://183.250.1.132:8012/ljy/somanyad.git',
+    normalizeRepoUrlForHttpsClone('http://127.0.0.1:8012/ljy/somanyad.git'),
+    'http://127.0.0.1:8012/ljy/somanyad.git',
   );
 });
 
 test('normalizeRepoUrlForHttpsClone: 优先 https_clone_url', () => {
   assert.equal(
     normalizeRepoUrlForHttpsClone('git@gitlab.daydaymoney.com:ljy124818167/somanyad.git', {
-      httpsCloneUrl: 'http://183.250.1.132:8012/ljy124818167/somanyad',
+      httpsCloneUrl: 'http://127.0.0.1:8012/ljy124818167/somanyad',
     }),
-    'http://183.250.1.132:8012/ljy124818167/somanyad',
+    'http://127.0.0.1:8012/ljy124818167/somanyad',
   );
 });
 

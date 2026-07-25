@@ -45,7 +45,7 @@ import {
  * 读取 lastBootstrapTaskDetail.parameters.repo_clone_git_identity_details，
  * 按 repo_match_key 匹配克隆层内各 Git 工作区。
  */
-async function applyBootstrapCloneGitIdentities() {
+export async function applyBootstrapCloneGitIdentities() {
   const detail = lastBootstrapTaskDetail;
   if (!detail) return;
   const params = detail?.parameters;

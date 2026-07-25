@@ -11,6 +11,7 @@ import {
   lastBootstrapTaskDetail,
   collectRepoCloneJobs,
   bootstrapCloneLogFailurePayload,
+  applyBootstrapCloneGitIdentities,
 } from './bootstrap.mjs';
 import {
   taskApiPrefix,
@@ -348,6 +349,12 @@ export function registerReposCloneRoutes(api) {
             appendCloneLayerLog(layerId, `\n[重新克隆] 完成 ${name}\n`);
           } catch {
             /* ignore */
+          }
+          // 重新克隆完成后自动同步 Git 身份配置（与全量 bootstrap clone 行为一致）
+          try {
+            await applyBootstrapCloneGitIdentities();
+          } catch {
+            /* ignore — identity sync is best-effort */
           }
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);

@@ -101,15 +101,15 @@ test('buildHttpAuthFromRepoCredential defaults gitlab provider to oauth2', () =>
 test('prepareOauthHttpsGitClone: SSH + https_clone_url → HTTPS + askpass', async () => {
   const { prepareOauthHttpsGitClone } = await import('./bootstrap.mjs');
   const credRoot = {
-    'git@183.250.1.132:ljy/somanyad.git': {
+    'git@127.0.0.1:ljy/somanyad.git': {
       ephemeral_oauth_access_token: 'tok-oauth',
       provider: 'gitlab',
       git_http_username: 'oauth2',
-      https_clone_url: 'http://183.250.1.132:8012/ljy/somanyad',
+      https_clone_url: 'http://127.0.0.1:8012/ljy/somanyad',
     },
   };
-  const got = prepareOauthHttpsGitClone('git@183.250.1.132:ljy/somanyad.git', credRoot);
-  assert.equal(got.cloneRemote, 'http://183.250.1.132:8012/ljy/somanyad');
+  const got = prepareOauthHttpsGitClone('git@127.0.0.1:ljy/somanyad.git', credRoot);
+  assert.equal(got.cloneRemote, 'http://127.0.0.1:8012/ljy/somanyad');
   assert.equal(got.normalizedFromSsh, true);
   assert.ok(got.httpAuth);
   assert.equal(got.httpAuth.username, 'oauth2');
@@ -121,14 +121,14 @@ test('prepareOauthHttpsGitClone: SSH + https_clone_url → HTTPS + askpass', asy
 test('prepareOauthHttpsGitClone: SSH without https_clone_url throws', async () => {
   const { prepareOauthHttpsGitClone } = await import('./bootstrap.mjs');
   const credRoot = {
-    'git@183.250.1.132:ljy/somanyad.git': {
+    'git@127.0.0.1:ljy/somanyad.git': {
       ephemeral_oauth_access_token: 'tok-oauth',
       provider: 'gitlab',
       git_http_username: 'oauth2',
     },
   };
   assert.throws(
-    () => prepareOauthHttpsGitClone('git@183.250.1.132:ljy/somanyad.git', credRoot),
+    () => prepareOauthHttpsGitClone('git@127.0.0.1:ljy/somanyad.git', credRoot),
     /无法转为 HTTPS/
   );
 });
