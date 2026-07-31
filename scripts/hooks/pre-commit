@@ -50,8 +50,6 @@ collect_tests() {
                 -not -path './venv/*' \
                 -not -path './.venv/*' \
                 -not -path './site-packages/*' \
-                -not -path '*tests/agent/*' \
-                -not -path '*trae_agent/*' \
                 -not -path '*/__pycache__/*' \
                 2>/dev/null
         else
@@ -59,8 +57,6 @@ collect_tests() {
                 -not -path '*/__pycache__/*' \
                 -not -path '*/venv/*' \
                 -not -path '*/.venv/*' \
-                -not -path '*tests/agent/*' \
-                -not -path '*trae_agent/*' \
                 2>/dev/null
         fi
     done | sed 's#^\./##' | sort -u
@@ -68,18 +64,12 @@ collect_tests() {
 
 run_python_test() {
     local test_file="$1"
-    local py="python3"
-    if [ -x ".venv/bin/python" ]; then
-        py=".venv/bin/python"
-    elif [ -x "venv/bin/python" ]; then
-        py="venv/bin/python"
-    fi
-    if "$py" -c 'import pytest' 2>/dev/null; then
-        echo "Running: $py -m pytest $test_file -q"
-        "$py" -m pytest "$test_file" -q --tb=line
+    if command -v python3 >/dev/null && python3 -c 'import pytest' 2>/dev/null; then
+        echo "Running: python3 -m pytest $test_file -q"
+        python3 -m pytest "$test_file" -q --tb=line
     else
-        echo "Running: $py $test_file"
-        "$py" "$test_file"
+        echo "Running: python3 $test_file"
+        python3 "$test_file"
     fi
 }
 
