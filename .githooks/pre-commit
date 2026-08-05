@@ -1,0 +1,76 @@
+#!/bin/bash
+# Python 仓库 pre-commit（共享库版 random_test_runner.sh）：
+# 1) 优先运行暂存的 test_*.py / *_test.py（100% 必跑）
+# 2) 对其余测例按比例随机抽测（默认 30%，保证至少 1 个）
+# 3) 任一测试失败则阻止提交
+# 可用 PRECOMMIT_PYTHON_TEST_ROOTS 覆盖扫描根（空格分隔，默认 "tests scripts ."）
+# 库: scripts/hooks/lib/random_test_runner.sh（SSOT，由 deploy_repo_random_precommit.sh 分发）
+
+set -u
+
+HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
+LIB="$HOOK_DIR/lib/random_test_runner.sh"
+if [ ! -f "$LIB" ]; then
+    echo "ERROR: shared lib missing: $LIB" >&2
+    echo "       redeploy: bash <monorepo-root>/scripts/deploy_repo_random_precommit.sh" >&2
+    exit 1
+fi
+source "$LIB"
+
+cleanup() {
+    echo "如果有测例失败，记得修复"
+    echo "如果提交失败，记得先尝试修复，不行再忽略测例"
+}
+trap cleanup EXIT
+
+# 仅变更 hooks/文档时跳过抽测，便于自举提交钩子模板（非 --no-verify）
+rt_bootstrap_skip && exit 0
+
+cd "$(git rev-parse --show-toplevel)" || exit 1
+
+echo "Running pre-commit Python tests in $(pwd)..."
+export PRE_COMMIT=1
+TEST_RATIO="${PRECOMMIT_TEST_RATIO:-30}"
+STAGED_FILES="$(git diff --cached --name-only 2>/dev/null || true)"
+
+TMP_ALL="$(mktemp)"
+TMP_STAGED="$(mktemp)"
+TMP_TO_RUN="$(mktemp)"
+trap 'rm -f "$TMP_ALL" "$TMP_STAGED" "$TMP_TO_RUN"; cleanup' EXIT
+
+rt_py_collect_files > "$TMP_ALL"
+if [ ! -s "$TMP_ALL" ]; then
+    echo "No Python unit tests found. Commit can proceed."
+    exit 0
+fi
+
+# 暂存 100%
+while IFS= read -r test_file; do
+    [ -z "$test_file" ] && continue
+    if echo "$STAGED_FILES" | grep -qxF "$test_file" 2>/dev/null; then
+        echo "$test_file" >> "$TMP_STAGED"
+    fi
+done < "$TMP_ALL"
+
+if [ -s "$TMP_STAGED" ]; then
+    echo "Running staged Python tests..."
+    while IFS= read -r test_file; do
+        [ -z "$test_file" ] && continue
+        rt_py_run_file "$test_file" || exit 1
+    done < "$TMP_STAGED"
+fi
+
+# 随机抽测（排除暂存文件）
+echo "Running random Python tests (ratio=${TEST_RATIO}%)..."
+if [ -s "$TMP_STAGED" ]; then
+    grep -vxFf "$TMP_STAGED" "$TMP_ALL" | rt_pick_random "$TEST_RATIO" > "$TMP_TO_RUN"
+else
+    rt_pick_random "$TEST_RATIO" < "$TMP_ALL" > "$TMP_TO_RUN"
+fi
+while IFS= read -r test_file; do
+    [ -z "$test_file" ] && continue
+    echo "Random pick: ${test_file}"
+    rt_py_run_file "$test_file" || exit 1
+done < "$TMP_TO_RUN"
+
+echo "All Python unit tests passed. Commit can proceed."

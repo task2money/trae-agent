@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# HOOK_VERSION 1.0.0
+# Bug-fix 提交必须携带对应回归单测 — 子仓 commit-msg 门禁
+# 细则: .ai/01_project_constraints/41_bug_fix_unit_test_required.md
+# 根仓权威版: .githooks/commit-msg（python3 db/scripts/ci/check_bug_fix_unit_tests.py）
+# 本版本: bash 移植，随模板分发；install.sh 将本文件与 check_bug_fix_commit_msg.sh
+#         一起复制到 .git/hooks/（commit-msg 阶段消息已确定，是唯一可靠检测点）。
+set -euo pipefail
+
+echo "▸ [hook:commit-msg v1.0.0]"
+
+HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
+CHECKER="$HOOK_DIR/check_bug_fix_commit_msg.sh"
+
+if [ ! -f "$CHECKER" ]; then
+  echo "⚠ 未找到 $CHECKER — bug-fix 门禁跳过（请运行 scripts/hooks/install.sh 重新安装）"
+  exit 0
+fi
+
+"$CHECKER" "${1:-}"

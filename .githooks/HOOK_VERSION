@@ -1,0 +1,4 @@
+# Git Hooks 版本清单 — trae-agent（git-hooks-version-control v13）
+pre-commit=1.0.0
+commit-msg=1.0.0
+check_bug_fix_commit_msg.sh=1.0.0
