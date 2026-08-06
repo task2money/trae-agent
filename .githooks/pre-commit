@@ -16,6 +16,9 @@ if [ ! -f "$LIB" ]; then
     exit 1
 fi
 source "$LIB"
+# Session Hub 提交锁校验（v1.1.0，可选 — 二进制缺失时放行）
+SES_LIB="$HOOK_DIR/lib/session_lock_check.sh"
+if [ -f "$SES_LIB" ]; then source "$SES_LIB"; session_hub_lock_check; fi
 
 cleanup() {
     echo "如果有测例失败，记得修复"
