@@ -25,24 +25,25 @@ compute_image_version() {
   sanitize_docker_tag "$desc"
 }
 
-# 查询或创建当前 commit 的「按架构」git tag。
-# - 当前 HEAD 已有匹配该架构前缀（${arch}_）的 tag：复用首个匹配项。
-# - 否则按 "${arch}_%Y-%m-%d_%H-%M" 在 HEAD 上新建 git tag 并返回。
+# 查询或创建当前 commit 的「按架构」git tag（反映本次构建本地时间）。
+# - 始终按 "${arch}_%Y-%m-%d_%H-%M" 生成候选名（本地时区 date）。
+# - HEAD 已有与候选名完全相同的 tag：幂等复用（同分钟重跑）。
+# - HEAD 上仅有更早日期的同架构 tag：不得复用，须新建当前时间 tag。
 # - 不在 git 仓库 / git 不可用：仅生成同形名字（不打 tag）。
 # 注：用户原指定格式为 "${Arch}_%Y-%m-%d %H:%M"，但空格与冒号在 git/docker tag 中均非法，
 # 这里将空格替换为 "_"、冒号替换为 "-"，等价为 "${arch}_%Y-%m-%d_%H-%M"。
 ensure_commit_git_tag() {
   local arch="$1"
-  local existing="" candidate=""
+  local candidate=""
   candidate="${arch}_$(date '+%Y-%m-%d_%H-%M')"
   if ! command -v git >/dev/null 2>&1 \
      || ! git -C "$REPO_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     printf '%s' "$candidate"
     return 0
   fi
-  existing="$(git -C "$REPO_ROOT" tag --points-at HEAD 2>/dev/null | awk -v pfx="^${arch}_" '$0 ~ pfx { print; exit }' || true)"
-  if [[ -n "$existing" ]]; then
-    printf '%s' "$existing"
+  # 仅当 HEAD 已精确打上「当前分钟」候选名时复用；禁止复用同架构旧日期 tag。
+  if git -C "$REPO_ROOT" tag --points-at HEAD 2>/dev/null | grep -Fxq -- "$candidate"; then
+    printf '%s' "$candidate"
     return 0
   fi
   if git -C "$REPO_ROOT" rev-parse --verify "refs/tags/${candidate}" >/dev/null 2>&1; then
@@ -51,7 +52,7 @@ ensure_commit_git_tag() {
     return 0
   fi
   if git -C "$REPO_ROOT" tag "$candidate" >/dev/null 2>&1; then
-    echo "[buildDocker.sh] 当前 commit 无 git tag，已新建: $candidate" >&2
+    echo "[buildDocker.sh] 已按当前时间新建 git tag: $candidate" >&2
   else
     echo "[buildDocker.sh] 警告: 创建 git tag 失败: $candidate（仅作为 docker tag 使用）" >&2
   fi

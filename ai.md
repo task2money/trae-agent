@@ -20,6 +20,8 @@
   ```
 
   禁止只提交代码却不推送镜像，以免仓库镜像落后于已提交源码。仅文档/纯测试/不影响镜像内容的改动可跳过推送，但须在交付说明中写明原因。
+
+  **Monorepo 元规则（约束 46）**：本条已提升为仓库级硬约束，见 `.ai/01_project_constraints/46_trae_agent_online_service_docker_push.md`。Stop/SessionEnd 自动登记 pending；SessionEnd 后台兜底推送；入口脚本 `scripts/trae-agent-docker-push.sh`（相对 monorepo 根）。
 - 适用场景：对本目录下任意源文件完成实现类改动并提交时；用户要求 commit / ship / 交付时
 - 优先级：高
 
@@ -33,7 +35,7 @@
 
 #### 推送时机（二级分类）
 ##### 先提交再推送
-- 描述：`buildDocker.sh` 在 arch_timestamp 方案下可能按当前 HEAD 打 git tag 并用作 docker tag。宜先完成 git commit，再执行 `DOCKER_PUSH=1 ./buildDocker.sh`，使镜像标签与已提交内容一致。
+- 描述：`buildDocker.sh` 在 arch_timestamp 方案下会按**本次构建本地时间**打 git/docker tag（形如 `x86_64_YYYY-MM-DD_HH-MM`；同分钟重跑幂等，不复用 HEAD 上旧日期同架构 tag）。宜先完成 git commit，再执行 `DOCKER_PUSH=1 ./buildDocker.sh`，使镜像标签与已提交内容一致。
 - 适用场景：提交与镜像发布连续进行时
 - 优先级：中
 
@@ -58,5 +60,6 @@
   3. 新版本规则覆盖旧版本规则
 
 ## 变更日志
+- 2026-08-12：对齐 monorepo 约束 46（自动登记 pending + SessionEnd 兜底推送）
 - 2026-07-23：说明默认仅推 x86；全架构需 `DOCKER_PLATFORMS=all`
 - 2026-07-12：版本 1.0.0 - 初始创建，要求 trae-agent 提交后使用 `DOCKER_PUSH=1 ./buildDocker.sh` 推送镜像

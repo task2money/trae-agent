@@ -26,6 +26,8 @@
   ```
 
   父目录总则见 [`../ai.md`](../ai.md)。禁止只提交不推送导致 registry 镜像落后于源码。
+
+  **Monorepo 元规则（约束 46）**：`.ai/01_project_constraints/46_trae_agent_online_service_docker_push.md`；入口 `scripts/trae-agent-docker-push.sh`。
 - 适用场景：修改本目录源码/Dockerfile/依赖并提交或交付时
 - 优先级：高
 
@@ -40,7 +42,7 @@
 
 #### 推送时机（二级分类）
 ##### 先提交再推送
-- 描述：先 git commit，再 `DOCKER_PUSH=1 ./buildDocker.sh`，以便镜像 tag 与 HEAD 一致。
+- 描述：先 git commit，再 `DOCKER_PUSH=1 ./buildDocker.sh`，以便镜像 tag 与 HEAD 一致。`arch_timestamp` 下 docker/git tag 形如 `x86_64_YYYY-MM-DD_HH-MM`，**取本次构建本地时间**（同分钟重跑可幂等）；不得复用 HEAD 上更早日期的同架构 tag。
 - 适用场景：提交与推送连续进行时
 - 优先级：中
 
@@ -71,6 +73,7 @@
   3. 新版本规则覆盖旧版本规则
 
 ## 变更日志
+- 2026-08-12：对齐 monorepo 约束 46
 - 2026-07-23：`buildDocker.sh` 默认仅推 x86；`DOCKER_PLATFORMS=all` 才双架构
 - 2026-07-19：补充 access 主动 refresh-access 最佳实践（proactiveAccessRefresh）
 - 2026-07-12：版本 1.0.0 - 初始创建，强化提交后 Docker 推送提醒
