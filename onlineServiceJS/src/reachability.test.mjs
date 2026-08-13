@@ -1,10 +1,12 @@
 // @ts-check
 import { test } from 'node:test';
 import assert from 'node:assert';
+import http from 'http';
 
 import {
   isSaasColocatedWithContainer,
   reachabilityFromBusinessEndpointEnv,
+  registerReachabilityAfterBootstrap,
   resolveReachableIp,
 } from './reachability.mjs';
 
@@ -22,6 +24,10 @@ const KEYS = [
   'TASK_API_ENDPOINT_ORIGIN',
   'TASK_API_ENDPOINT',
   'TaskApiEndPoint',
+  'ACCESS_TOKEN',
+  'TRAE_SKIP_REACHABILITY_REGISTER',
+  'COMMENT_ID',
+  'CONTAINER_NAME',
 ];
 
 function snapshotEnv(keys) {
@@ -152,6 +158,54 @@ test('isSaasColocatedWithContainer：公网 TASK_API 非同机', () => {
     assert.equal(isSaasColocatedWithContainer(), false);
   } finally {
     restoreEnv(saved);
+  }
+});
+
+test('registerReachabilityAfterBootstrap：POST body 含 comment_id/container_name', async () => {
+  const saved = snapshotEnv(KEYS);
+  /** @type {string} */
+  let received = '';
+  /** @type {string} */
+  let reqUrl = '';
+  const server = http.createServer((req, res) => {
+    reqUrl = req.url || '';
+    const chunks = [];
+    req.on('data', (c) => chunks.push(c));
+    req.on('end', () => {
+      received = Buffer.concat(chunks).toString('utf8');
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end('{}');
+    });
+  });
+  await new Promise((resolve, reject) => {
+    server.on('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const addr = server.address();
+  const port = typeof addr === 'object' && addr ? addr.port : 0;
+  try {
+    // TaskApiEndPoint 指向本地 server；BusinessApiEndPoint 带公网 IP 避免 resolveReachableIp
+    delete process.env.TASK_API_ENDPOINT_ORIGIN;
+    delete process.env.TASK_API_ENDPOINT;
+    delete process.env.TRAE_SKIP_REACHABILITY_REGISTER;
+    delete process.env.TRAE_SAAS_COLOCATED;
+    process.env.TaskApiEndPoint = `http://127.0.0.1:${port}/api/tenant/ta/workspace/ws1/task/td1/cloud`;
+    process.env.BusinessApiEndPoint = 'http://203.0.113.8:8765/api';
+    process.env.ACCESS_TOKEN = 'reach-scope-token';
+    process.env.COMMENT_ID = ' cmt_9 ';
+    process.env.CONTAINER_NAME = 'task_9_cmt_9';
+    await registerReachabilityAfterBootstrap({
+      prefix: `http://127.0.0.1:${port}`,
+      timeout: 2,
+      skipped: false,
+    });
+    assert.ok(reqUrl.endsWith('/server-container-token/register-reachability/'), `unexpected path: ${reqUrl}`);
+    const body = JSON.parse(received);
+    assert.strictEqual(body.comment_id, 'cmt_9');
+    assert.strictEqual(body.container_name, 'task_9_cmt_9');
+  } finally {
+    restoreEnv(saved);
+    await new Promise((resolve) => server.close(() => resolve(undefined)));
   }
 });
 

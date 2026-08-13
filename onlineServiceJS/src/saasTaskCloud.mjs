@@ -14,6 +14,7 @@ import {
   debugAgentStringify,
 } from './outboundReqLog.mjs';
 import { traceHeadersForOutbound } from './traceId.mjs';
+import { saasInboundScopeFields } from './saasInboundScope.mjs';
 
 function loopbackFallbackUrl(url) {
   try {
@@ -409,7 +410,7 @@ export async function postContainerHeartbeatToSaas(message) {
   if (!cloudPrefix || !accessToken) return false;
   const url = `${cloudPrefix.replace(/\/$/, '')}/server-container-token/heartbeat/`;
   containerHeartbeatSeq += 1;
-  const body = { access_token: accessToken, seq: containerHeartbeatSeq };
+  const body = { access_token: accessToken, seq: containerHeartbeatSeq, ...saasInboundScopeFields() };
   if (lastSaasHeartbeatSeq > 0) {
     body.ack = lastSaasHeartbeatSeq;
   }

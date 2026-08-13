@@ -6,6 +6,7 @@ import {
   appendOutboundReqLog,
 } from './outboundReqLog.mjs';
 import { postJson, rewriteDockerInternal, taskApiPrefix } from './saasTaskCloud.mjs';
+import { saasInboundScopeFields } from './saasInboundScope.mjs';
 
 /** IPv6 等非 IPv4 文本在 URL authority 中需方括号 */
 function authorityHost(ip) {
@@ -251,6 +252,7 @@ export async function registerReachabilityAfterBootstrap(ctx) {
     access_token: token,
     server_url: serverUrl,
     business_api_endpoint: biz,
+    ...saasInboundScopeFields(),
   };
   if (pip) body.public_ip = pip;
   if (vscodeUrl) body.container_vscode_url = vscodeUrl;

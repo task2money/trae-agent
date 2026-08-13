@@ -20,6 +20,7 @@ import {
   readPersistedRefreshToken,
   writePersistedRefreshToken,
 } from './bootstrapTokenStore.mjs';
+import { saasInboundScopeFields } from './saasInboundScope.mjs';
 
 /** 换票专用日志：onlineProject_state/logs/tokenRefresh.log，便于与 reqLogs/outbound.log 区分排查 */
 function appendTokenRefreshLog(line) {
@@ -107,7 +108,7 @@ export async function runRefreshAccessOnly(prefix, refreshToken, tokenTimeout) {
   );
   const ref = await postJsonWithAbortRetry(
     `${prefix}/server-container-token/refresh-access/`,
-    { refresh_token: rt },
+    { refresh_token: rt, ...saasInboundScopeFields() },
     tokenTimeout,
     'refresh-access',
     logTokenExchange,
@@ -181,7 +182,7 @@ export async function runBootstrapTokenExchangeOnly() {
         logTokenExchange(`POST ${prefix}/server-container-token/exchange-refresh/`);
         const ex = await postJsonWithAbortRetry(
           `${prefix}/server-container-token/exchange-refresh/`,
-          { access_token: newAccess, business_api_endpoint: business },
+          { access_token: newAccess, business_api_endpoint: business, ...saasInboundScopeFields() },
           tokenTimeout,
           'exchange-refresh',
           logTokenExchange,

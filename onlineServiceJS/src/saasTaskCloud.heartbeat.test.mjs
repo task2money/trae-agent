@@ -23,7 +23,7 @@ function restoreEnv(saved) {
   }
 }
 
-const KEYS = ['TaskApiEndPoint', 'TASK_API_ENDPOINT', 'tenantId', 'workspaceId', 'taskId', 'ACCESS_TOKEN'];
+const KEYS = ['TaskApiEndPoint', 'TASK_API_ENDPOINT', 'tenantId', 'workspaceId', 'taskId', 'ACCESS_TOKEN', 'COMMENT_ID', 'CONTAINER_NAME'];
 
 test('postContainerHeartbeatToSaas：POST .../heartbeat/ 且 body 含 access_token', async () => {
   const saved = snapshotEnv(KEYS);
@@ -70,6 +70,48 @@ test('postContainerHeartbeatToSaas：POST .../heartbeat/ 且 body 含 access_tok
     assert.strictEqual(body.message, 'ping-msg');
     assert.strictEqual(typeof body.seq, 'number');
     assert.ok(body.seq >= 1);
+  } finally {
+    restoreEnv(saved);
+    await new Promise((resolve) => server.close(() => resolve(undefined)));
+  }
+});
+
+test('postContainerHeartbeatToSaas：COMMENT_ID/CONTAINER_NAME 写入 heartbeat body', async () => {
+  const saved = snapshotEnv(KEYS);
+  /** @type {string} */
+  let received = '';
+  /** @type {string} */
+  let reqUrl = '';
+  const server = http.createServer((req, res) => {
+    reqUrl = req.url || '';
+    const chunks = [];
+    req.on('data', (c) => chunks.push(c));
+    req.on('end', () => {
+      received = Buffer.concat(chunks).toString('utf8');
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ status: 'ok', task_id: 't1', seq: 1, ack: 1, bidirectional_ok: true }));
+    });
+  });
+  await new Promise((resolve, reject) => {
+    server.on('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const addr = server.address();
+  const port = typeof addr === 'object' && addr ? addr.port : 0;
+  try {
+    resetContainerHeartbeatSeqState();
+    delete process.env.tenantId;
+    delete process.env.workspaceId;
+    delete process.env.taskId;
+    process.env.TaskApiEndPoint = `http://127.0.0.1:${port}/api/tenant/ta/workspace/ws1/task/td1/cloud`;
+    process.env.ACCESS_TOKEN = 'hb-scope-token';
+    process.env.COMMENT_ID = ' cmt_42 ';
+    process.env.CONTAINER_NAME = 'task_1_cmt_42';
+    assert.strictEqual(await postContainerHeartbeatToSaas(), true);
+    assert.ok(reqUrl.includes('/server-container-token/heartbeat/'), `unexpected path: ${reqUrl}`);
+    const body = JSON.parse(received);
+    assert.strictEqual(body.comment_id, 'cmt_42');
+    assert.strictEqual(body.container_name, 'task_1_cmt_42');
   } finally {
     restoreEnv(saved);
     await new Promise((resolve) => server.close(() => resolve(undefined)));
