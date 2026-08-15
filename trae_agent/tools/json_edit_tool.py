@@ -192,6 +192,17 @@ JSONPath syntax supported:
         except Exception as e:
             raise ToolError(f"Error parsing JSONPath '{json_path_str}': {str(e)}") from e
 
+    @staticmethod
+    def _index_from_target(target) -> int | None:
+        """jsonpath-ng Index used `.index`; newer versions expose `.indices`."""
+        indices = getattr(target, "indices", None)
+        if isinstance(indices, (list, tuple)) and indices:
+            return int(indices[0])
+        index = getattr(target, "index", None)
+        if isinstance(index, int):
+            return index
+        return None
+
     async def _view_json(
         self, file_path: Path, json_path_str: str | None, pretty_print: bool
     ) -> ToolExecResult:
@@ -274,7 +285,12 @@ JSONPath syntax supported:
                         error=f"Cannot add element to non-array at path: {parent_path}",
                         error_code=-1,
                     )
-                index_to_add = target.index
+                index_to_add = self._index_from_target(target)
+                if index_to_add is None:
+                    return ToolExecResult(
+                        error=f"Unsupported add operation for path type: {type(target)}. Path must end in a key or array index.",
+                        error_code=-1,
+                    )
                 parent_obj.insert(index_to_add, value)
             else:
                 return ToolExecResult(
@@ -315,7 +331,9 @@ JSONPath syntax supported:
                         if isinstance(parent_obj, dict) and key_to_remove in parent_obj:
                             del parent_obj[key_to_remove]
                     elif isinstance(target, Index):
-                        index_to_remove = target.index
+                        index_to_remove = self._index_from_target(target)
+                        if index_to_remove is None:
+                            continue
                         if isinstance(parent_obj, list) and -len(
                             parent_obj
                         ) <= index_to_remove < len(parent_obj):

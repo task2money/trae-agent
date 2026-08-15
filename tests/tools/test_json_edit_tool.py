@@ -199,6 +199,19 @@ class TestJSONEditTool(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(result.error_code, -1)
             self.assertIn("File does not exist", result.error)
 
+    def test_index_from_target_supports_indices_and_index(self):
+        """jsonpath-ng Index dropped `.index` in favor of `.indices`."""
+
+        class NewIndex:
+            indices = (2,)
+
+        class OldIndex:
+            index = 3
+
+        self.assertEqual(JSONEditTool._index_from_target(NewIndex()), 2)
+        self.assertEqual(JSONEditTool._index_from_target(OldIndex()), 3)
+        self.assertIsNone(JSONEditTool._index_from_target(object()))
+
 
 if __name__ == "__main__":
     unittest.main()
