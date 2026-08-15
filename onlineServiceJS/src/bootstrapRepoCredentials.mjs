@@ -3,15 +3,18 @@ import path from 'path';
 import os from 'os';
 import { normalizeRepoUrlForHttpsClone } from './gitRemote.mjs';
 import { postJson } from './saasTaskCloud.mjs';
+import { appendOutboundReqLog } from './outboundReqLog.mjs';
 
 /**
  * 从 task-detail 收集待克隆仓库（URL + 可选 clone_alias / parent_repo_url）。
  * 优先 `git_repo_entries`；否则回退 `git_repos` 字符串列表。
+ * 项目 `auto_clone_nested_repos=false` 时跳过带 parent_repo_url 的子仓（镜像侧门控）。
  * @returns {{ url: string, cloneAlias: string, parentRepoUrl: string }[]}
  */
 export function collectRepoCloneJobs(taskDetail) {
   const out = [];
   const seen = new Set();
+  let skippedNested = 0;
   function add(rawUrl, rawAlias, rawParent) {
     const u = String(rawUrl || '').trim();
     if (!u || seen.has(u)) return;
@@ -22,18 +25,19 @@ export function collectRepoCloneJobs(taskDetail) {
       parentRepoUrl: String(rawParent || '').trim(),
     });
   }
-  function walkEntries(entries) {
+  function walkEntries(entries, allowNested) {
     if (!Array.isArray(entries)) return false;
     let any = false;
     for (const e of entries) {
       if (!e || typeof e !== 'object') continue;
       const url = e.url || e.repo_url || e.git_repo;
       if (!url) continue;
-      add(
-        url,
-        e.clone_alias || e.alias || '',
-        e.parent_repo_url || e.parentRepoUrl || '',
-      );
+      const parent = String(e.parent_repo_url || e.parentRepoUrl || '').trim();
+      if (!allowNested && parent) {
+        skippedNested += 1;
+        continue;
+      }
+      add(url, e.clone_alias || e.alias || '', parent);
       any = true;
     }
     return any;
@@ -48,7 +52,8 @@ export function collectRepoCloneJobs(taskDetail) {
       return;
     }
     if (value && typeof value === 'object') {
-      if (walkEntries(value.git_repo_entries)) {
+      const allowNested = projectAllowsNestedClone(value);
+      if (walkEntries(value.git_repo_entries, allowNested)) {
         return;
       }
       add(
@@ -59,12 +64,13 @@ export function collectRepoCloneJobs(taskDetail) {
       if (value.git_repos != null) walk(value.git_repos);
     }
   }
+  const allowNested = nestedAllowedFromDetail(taskDetail);
   if (taskDetail?.project_repos) walk(taskDetail.project_repos);
-  if (taskDetail?.git_repo_entries) walkEntries(taskDetail.git_repo_entries);
+  if (taskDetail?.git_repo_entries) walkEntries(taskDetail.git_repo_entries, allowNested);
   if (taskDetail?.git_repos) walk(taskDetail.git_repos);
   const taskObj = taskDetail?.task;
   if (taskObj && typeof taskObj === 'object') {
-    if (taskObj.git_repo_entries) walkEntries(taskObj.git_repo_entries);
+    if (taskObj.git_repo_entries) walkEntries(taskObj.git_repo_entries, allowNested);
     if (taskObj.git_repos) walk(taskObj.git_repos);
     const params = taskObj.parameters;
     if (params && typeof params === 'object') {
@@ -73,7 +79,31 @@ export function collectRepoCloneJobs(taskDetail) {
       }
     }
   }
+  if (skippedNested > 0) {
+    appendOutboundReqLog(
+      `bootstrap-clone skip nested repos count=${skippedNested} reason=auto_clone_nested_repos=false`,
+    );
+  }
   return out;
+}
+
+/** 任一 project_repos 快照关闭子仓克隆时，顶层 git_repo_entries 也跳过 nested。 */
+export function nestedAllowedFromDetail(taskDetail) {
+  const repos = taskDetail?.project_repos;
+  if (Array.isArray(repos) && repos.length) {
+    return repos.every(projectAllowsNestedClone);
+  }
+  return projectAllowsNestedClone(taskDetail?.project || taskDetail);
+}
+
+/** 缺省 true，与 project_entries.auto_clone_nested_repos DEFAULT 1 一致。 */
+export function projectAllowsNestedClone(project) {
+  if (!project || typeof project !== 'object') return true;
+  const v = project.auto_clone_nested_repos;
+  if (v === undefined || v === null) return true;
+  if (v === false || v === 0 || v === '0') return false;
+  if (typeof v === 'string' && v.trim().toLowerCase() === 'false') return false;
+  return true;
 }
 
 function collectRepoUrls(taskDetail) {
