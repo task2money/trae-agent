@@ -7,6 +7,10 @@
 import { spawn } from 'child_process';
 
 import { gitCmd } from './gitCmd.mjs';
+import {
+  buildTaskCloudPrefix,
+  parseTenantWorkspaceTaskFromPath,
+} from './scopedUiPath.mjs';
 import { saasInboundScopeFields } from './saasInboundScope.mjs';
 import {
   postJson,
@@ -36,27 +40,8 @@ export function rewriteDockerInternal(url) {
 }
 
 /**
- * 从路径中解析任务云三段 ID。
- * 支持：标准任务云路径、`/api/.../task-detail/{id}`、以及浏览器任务详情页 `/tenant/.../task-detail/{id}`。
- * 误把任务详情页 URL 当作 TaskApiEndPoint 时，此前无法解析导致换票跳过、库中 container_refresh_token 一直为空。
- */
-function parseTenantWorkspaceTaskFromPath(pathname) {
-  const p = String(pathname || '');
-  const patterns = [
-    /\/api\/tenant\/([^/]+)\/workspace\/([^/]+)\/task\/([^/]+)/,
-    /\/api\/tenant\/([^/]+)\/workspace\/([^/]+)\/task-detail\/([^/]+)/,
-    /\/tenant\/([^/]+)\/workspace\/([^/]+)\/task-detail\/([^/]+)/,
-  ];
-  for (const re of patterns) {
-    const m = p.match(re);
-    if (m) return { tenant: m[1], workspace: m[2], task: m[3] };
-  }
-  return null;
-}
-
-/**
- * 任务云回调前缀：`.../api/tenant/.../workspace/.../task/.../cloud`。
- * 优先读环境变量 tenantId / workspaceId / taskId；若缺失则从 TaskApiEndPoint（或同义的 TASK_API_ENDPOINT）的 URL 路径解析（适用于 UserData 仅注入完整 API 根路径的场景）。
+ * 任务云回调前缀：`.../api/tenant/.../workspace/.../task/...[/comment/{cid}]/cloud`。
+ * 优先读环境变量 tenantId / workspaceId / taskId / COMMENT_ID；若缺失则从 TaskApiEndPoint 路径解析。
  */
 export function taskApiPrefix() {
   const raw = rewriteDockerInternal(
@@ -67,6 +52,8 @@ export function taskApiPrefix() {
   let tenant = String(process.env.tenantId || '').trim();
   let workspace = String(process.env.workspaceId || '').trim();
   let task = String(process.env.taskId || '').trim();
+  let comment = String(process.env.COMMENT_ID || '').trim();
+  if (comment === '-') comment = '';
 
   try {
     const base = raw.includes('://') ? raw : `http://${raw}`;
@@ -76,6 +63,7 @@ export function taskApiPrefix() {
       if (!tenant) tenant = parsed.tenant;
       if (!workspace) workspace = parsed.workspace;
       if (!task) task = parsed.task;
+      if (!comment && parsed.comment) comment = String(parsed.comment).trim();
     }
   } catch {
     /* 非 URL 形态时仅依赖环境变量 */
@@ -96,7 +84,7 @@ export function taskApiPrefix() {
     throw new Error('Invalid TaskApiEndPoint/TASK_API_ENDPOINT (expected absolute URL or origin)');
   }
 
-  return `${origin.replace(/\/$/, '')}/api/tenant/${tenant}/workspace/${workspace}/task/${task}/cloud`;
+  return buildTaskCloudPrefix(origin, tenant, workspace, task, comment);
 }
 
 /**

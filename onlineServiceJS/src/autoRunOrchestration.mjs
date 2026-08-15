@@ -1,6 +1,6 @@
 /**
  * auto_run 首指令与完成后交付编排（容器内闭环）。
- * 契约见 machine_container.md §4.4 与意图 006_auto_run_first_instruction_and_delivery。
+ * 契约见 docs/skills/saas-container/saas-machine-container.md 与意图 006_auto_run_first_instruction_and_delivery。
  */
 import fs from 'fs';
 import path from 'path';

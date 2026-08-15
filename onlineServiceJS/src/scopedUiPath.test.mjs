@@ -115,3 +115,12 @@ test('parseTenantWorkspaceTaskFromPath: UI scoped', () => {
     { tenant: 't1', workspace: 'w1', task: 'task1' },
   );
 });
+
+test('parseTenantWorkspaceTaskFromPath: TaskApiEndPoint 含 comment 段', () => {
+  assert.deepEqual(
+    parseTenantWorkspaceTaskFromPath(
+      '/api/tenant/t1/workspace/w1/task/task1/comment/cmt_1/cloud',
+    ),
+    { tenant: 't1', workspace: 'w1', task: 'task1', comment: 'cmt_1' },
+  );
+});

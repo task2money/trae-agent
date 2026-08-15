@@ -26,6 +26,7 @@ const KEYS = [
   'tenantId',
   'workspaceId',
   'taskId',
+  'COMMENT_ID',
   'DOCKER_GATEWAY_HOSTNAME',
   'DOCKER_HOST_GATEWAY_IP',
 ];
@@ -76,6 +77,42 @@ test('taskApiPrefix：仅设 TASK_API_ENDPOINT（docker -e 常见写法）时与
     assert.strictEqual(
       taskApiPrefix(),
       'http://api.aidevpm.com/api/tenant/827923618468040704/workspace/827923618602258432/task/840502733785767936/cloud'
+    );
+  } finally {
+    restoreEnv(saved);
+  }
+});
+
+test('taskApiPrefix：保留 /comment/{cid}/ 位置段（skill 推荐 TaskApiEndPoint）', () => {
+  const saved = snapshotEnv(KEYS);
+  try {
+    delete process.env.tenantId;
+    delete process.env.workspaceId;
+    delete process.env.taskId;
+    delete process.env.COMMENT_ID;
+    process.env.TaskApiEndPoint =
+      'https://api.example.com/api/tenant/a/workspace/b/task/c/comment/cmt_1/cloud';
+    assert.strictEqual(
+      taskApiPrefix(),
+      'https://api.example.com/api/tenant/a/workspace/b/task/c/comment/cmt_1/cloud'
+    );
+  } finally {
+    restoreEnv(saved);
+  }
+});
+
+test('taskApiPrefix：旧前缀 + COMMENT_ID 补上 /comment/{cid}/', () => {
+  const saved = snapshotEnv(KEYS);
+  try {
+    delete process.env.tenantId;
+    delete process.env.workspaceId;
+    delete process.env.taskId;
+    process.env.COMMENT_ID = 'cmt_9';
+    process.env.TaskApiEndPoint =
+      'https://api.example.com/api/tenant/a/workspace/b/task/c/cloud';
+    assert.strictEqual(
+      taskApiPrefix(),
+      'https://api.example.com/api/tenant/a/workspace/b/task/c/comment/cmt_9/cloud'
     );
   } finally {
     restoreEnv(saved);

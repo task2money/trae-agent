@@ -1,6 +1,6 @@
 /**
  * Agent 步骤/响应字段 → 前端富文本呈现策略（表驱动）。
- * HTML 子集与净化约定见 task2app/Saas_project/skillList/machine_container.md §7。
+ * HTML 子集与净化约定见 src/htmlSanitize.mjs（原 Django machine_container.md §7）。
  */
 
 import { getMachineContainerV1AllowlistSpec } from './htmlSanitize.mjs';

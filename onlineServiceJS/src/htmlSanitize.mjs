@@ -1,5 +1,5 @@
 /**
- * 与 task2app/Saas_project/skillList/machine_container.md §7.2–7.4 对齐的 HTML 白名单净化。
+ * 容器控制台 HTML 白名单净化（SSOT；原 Django machine_container.md §7.2–7.4）。
  */
 import sanitizeHtml from 'sanitize-html';
 

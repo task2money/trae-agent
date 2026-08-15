@@ -11,10 +11,21 @@
 
 /**
  * @param {string} pathname
- * @returns {{ tenant: string, workspace: string, task: string } | null}
+ * @returns {{ tenant: string, workspace: string, task: string, comment?: string } | null}
  */
 export function parseTenantWorkspaceTaskFromPath(pathname) {
   const p = String(pathname || '');
+  const withComment = p.match(
+    /\/api\/tenant\/([^/]+)\/workspace\/([^/]+)\/task\/([^/]+)\/comment\/([^/]+)/,
+  );
+  if (withComment) {
+    return {
+      tenant: withComment[1],
+      workspace: withComment[2],
+      task: withComment[3],
+      comment: withComment[4],
+    };
+  }
   const patterns = [
     /\/api\/tenant\/([^/]+)\/workspace\/([^/]+)\/task\/([^/]+)/,
     /\/api\/tenant\/([^/]+)\/workspace\/([^/]+)\/task-detail\/([^/]+)/,
@@ -26,6 +37,24 @@ export function parseTenantWorkspaceTaskFromPath(pathname) {
     if (m) return { tenant: m[1], workspace: m[2], task: m[3] };
   }
   return null;
+}
+
+/**
+ * 任务云 inbound 前缀。有 commentId 时带位置段 `/comment/{cid}/`（skill 推荐值）。
+ * @param {string} origin
+ * @param {string} tenant
+ * @param {string} workspace
+ * @param {string} task
+ * @param {string} [comment]
+ * @returns {string}
+ */
+export function buildTaskCloudPrefix(origin, tenant, workspace, task, comment) {
+  const base = `${String(origin || '').replace(/\/$/, '')}/api/tenant/${tenant}/workspace/${workspace}/task/${task}`;
+  const cid = String(comment || '').trim();
+  if (cid && cid !== '-') {
+    return `${base}/comment/${cid}/cloud`;
+  }
+  return `${base}/cloud`;
 }
 
 /**
