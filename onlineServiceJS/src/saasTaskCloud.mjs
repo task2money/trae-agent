@@ -14,7 +14,7 @@ import {
   debugAgentStringify,
 } from './outboundReqLog.mjs';
 import { traceHeadersForOutbound } from './traceId.mjs';
-import { saasInboundScopeFields } from './saasInboundScope.mjs';
+import { saasInboundScopeFields, withSaasInboundScope } from './saasInboundScope.mjs';
 
 function loopbackFallbackUrl(url) {
   try {
@@ -122,6 +122,7 @@ export const HEARTBEAT_REQ_LOG_FILE = 'heartbeat.log';
  *   — `spanId` 当前请求的 span，作为下游 X-Parent-Span-Id
  */
 export async function postJson(url, body, timeoutSec = 8, opts = {}) {
+  const payload = withSaasInboundScope(body);
   const reqLogFile = opts && typeof opts === 'object' ? opts.reqLogFile : undefined;
   const outboundTraceId = opts && typeof opts === 'object' ? opts.traceId : undefined;
   const outboundSpanId = opts && typeof opts === 'object' ? opts.spanId : undefined;
@@ -148,14 +149,14 @@ export async function postJson(url, body, timeoutSec = 8, opts = {}) {
         try {
           if (isDebugAgentEnabled()) {
             appendOutboundReqLog(
-              `DEBUG_AGENT outbound request method=POST url=${targetUrl} headers=${debugAgentStringify(headers)} body=${debugAgentStringify(body)}`,
+              `DEBUG_AGENT outbound request method=POST url=${targetUrl} headers=${debugAgentStringify(headers)} body=${debugAgentStringify(payload)}`,
               logOpts,
             );
           }
           const r = await fetch(targetUrl, {
             method: 'POST',
             headers,
-            body: JSON.stringify(body),
+            body: JSON.stringify(payload),
             signal: ac.signal,
           });
           const text = await r.text();

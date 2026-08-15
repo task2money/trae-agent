@@ -6,7 +6,7 @@ import path from 'path';
 
 import { postJson } from './saasTaskCloud.mjs';
 
-const ENV_KEYS = ['DEBUG_AGENT', 'ONLINE_PROJECT_STATE_ROOT', 'TRACE_ID'];
+const ENV_KEYS = ['DEBUG_AGENT', 'ONLINE_PROJECT_STATE_ROOT', 'TRACE_ID', 'COMMENT_ID', 'CONTAINER_NAME'];
 
 function snapshotEnv() {
   const out = {};
@@ -37,6 +37,8 @@ test('postJson 在 DEBUG_AGENT=true 时记录出站请求与响应完整字段',
     process.env.DEBUG_AGENT = 'true';
     process.env.ONLINE_PROJECT_STATE_ROOT = stateRoot;
     delete process.env.TRACE_ID;
+    delete process.env.COMMENT_ID;
+    delete process.env.CONTAINER_NAME;
 
     const data = await postJson('http://127.0.0.1:8080/api/demo', { foo: 'bar' }, 2);
     assert.deepEqual(data, { ok: true, id: 7 });
@@ -71,6 +73,8 @@ test('postJson 在 DEBUG_AGENT=false 时不记录出站调试字段', async () =
     process.env.DEBUG_AGENT = 'false';
     process.env.ONLINE_PROJECT_STATE_ROOT = stateRoot;
     delete process.env.TRACE_ID;
+    delete process.env.COMMENT_ID;
+    delete process.env.CONTAINER_NAME;
 
     await postJson('http://127.0.0.1:8080/api/ping', { ping: 1 }, 2);
 
@@ -82,5 +86,26 @@ test('postJson 在 DEBUG_AGENT=false 时不记录出站调试字段', async () =
     fetchMock.mock.restore();
     restoreEnv(saved);
     fs.rmSync(stateRoot, { recursive: true, force: true });
+  }
+});
+
+test('postJson 在 COMMENT_ID 存在时把 comment_id 写入 body', async () => {
+  const saved = snapshotEnv();
+  const fetchMock = mock.method(globalThis, 'fetch', async (_url, init) => {
+    const body = JSON.parse(String(init.body || '{}'));
+    assert.equal(body.foo, 'bar');
+    assert.equal(body.comment_id, 'cmt-a');
+    return new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  });
+  try {
+    process.env.COMMENT_ID = 'cmt-a';
+    delete process.env.DEBUG_AGENT;
+    await postJson('http://127.0.0.1:8080/api/demo', { foo: 'bar' }, 2);
+  } finally {
+    fetchMock.mock.restore();
+    restoreEnv(saved);
   }
 });

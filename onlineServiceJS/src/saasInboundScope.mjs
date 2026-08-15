@@ -7,3 +7,9 @@ export function saasInboundScopeFields(env = process.env) {
   if (containerName) out.container_name = containerName;
   return out;
 }
+
+/** 合并评论作用域；SaaS `resolveInboundCommentCSC` 两评论时必须有 comment_id。 */
+export function withSaasInboundScope(body, env = process.env) {
+  const base = body && typeof body === 'object' && !Array.isArray(body) ? { ...body } : {};
+  return { ...base, ...saasInboundScopeFields(env) };
+}

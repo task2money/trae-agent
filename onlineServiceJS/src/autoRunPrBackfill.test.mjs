@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   backfillAutoRunPrToAgentComment,
   buildContainerAgentCompleteUrl,
+  completeMountedAgentComment,
   composeAutoRunPrBackfillReply,
   extractPrUrlsFromPushResult,
 } from './autoRunPrBackfill.mjs';
@@ -80,4 +81,28 @@ test('backfillAutoRunPrToAgentComment appends PR after prior stream text', async
   assert.equal(out.ok, true);
   assert.match(saw.assistantResponse, /^streamed stdout\n\n/);
   assert.match(saw.assistantResponse, /pull\/3/);
+});
+
+test('completeMountedAgentComment body 带 COMMENT_ID', async () => {
+  const prev = process.env.COMMENT_ID;
+  process.env.COMMENT_ID = 'cmt-complete';
+  try {
+    const calls = [];
+    const out = await completeMountedAgentComment({
+      agentCommentId: 'agent-9',
+      assistantResponse: 'done',
+      accessToken: 'tok',
+      prefixFn: () => 'https://api.example/api/tenant/t/workspace/w/task/task1/cloud',
+      fetchFn: async (_url, init) => {
+        calls.push(init);
+        return { ok: true, status: 200, text: async () => '{}' };
+      },
+    });
+    assert.equal(out.ok, true);
+    assert.equal(JSON.parse(calls[0].body).comment_id, 'cmt-complete');
+    assert.equal(JSON.parse(calls[0].body).assistant_response, 'done');
+  } finally {
+    if (prev === undefined) delete process.env.COMMENT_ID;
+    else process.env.COMMENT_ID = prev;
+  }
 });

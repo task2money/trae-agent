@@ -30,6 +30,28 @@ test('postMountedAgentChunk posts chunk with token', async () => {
   assert.equal(calls[0].init.headers['X-Access-Token'], 'tok');
 });
 
+test('postMountedAgentChunk body 带 COMMENT_ID', async () => {
+  const prev = process.env.COMMENT_ID;
+  process.env.COMMENT_ID = 'cmt-b';
+  try {
+    const calls = [];
+    await postMountedAgentChunk({
+      agentCommentId: 'ac1',
+      chunk: 'hello',
+      accessToken: 'tok',
+      prefixFn: () => 'http://x/api/cloud',
+      fetchFn: async (_url, init) => {
+        calls.push(init);
+        return { ok: true, status: 200, text: async () => '{}' };
+      },
+    });
+    assert.equal(JSON.parse(calls[0].body).comment_id, 'cmt-b');
+  } finally {
+    if (prev === undefined) delete process.env.COMMENT_ID;
+    else process.env.COMMENT_ID = prev;
+  }
+});
+
 test('createMountedAgentChunkBuffer flushes by size', async () => {
   const chunks = [];
   const buf = createMountedAgentChunkBuffer({

@@ -39,6 +39,32 @@ test('createEditRunAgentComment posts with X-Access-Token', async () => {
   assert.equal(body.context_pack.at_mention_run.source, 'edit_run');
 });
 
+test('createEditRunAgentComment body 带 COMMENT_ID', async () => {
+  const prev = process.env.COMMENT_ID;
+  process.env.COMMENT_ID = 'cmt-a';
+  try {
+    const calls = [];
+    await createEditRunAgentComment({
+      parentCommentId: 'p1',
+      installedImageId: 'img1',
+      accessToken: 'tok',
+      prefixFn: () => 'https://api.example/t/w/task/x/cloud',
+      fetchFn: async (url, init) => {
+        calls.push(init);
+        return {
+          ok: true,
+          status: 201,
+          text: async () => JSON.stringify({ id: 'agent-9' }),
+        };
+      },
+    });
+    assert.equal(JSON.parse(calls[0].body).comment_id, 'cmt-a');
+  } finally {
+    if (prev === undefined) delete process.env.COMMENT_ID;
+    else process.env.COMMENT_ID = prev;
+  }
+});
+
 test('ensureEditRunMountedAgentComment reuses existing mount', async () => {
   const rec = { edit_run_delivery: true, mounted_agent_comment_id: 'a1' };
   const out = await ensureEditRunMountedAgentComment(rec, {

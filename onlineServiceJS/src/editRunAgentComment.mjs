@@ -4,6 +4,7 @@
 import { readPersistedTokenStore } from './bootstrapTokenStore.mjs';
 import { taskApiPrefix } from './saasTaskCloud.mjs';
 import { emitRuntimeEvent } from './runtimeEventLog.mjs';
+import { withSaasInboundScope } from './saasInboundScope.mjs';
 import { traceHeadersForOutbound } from './traceId.mjs';
 
 /**
@@ -62,7 +63,7 @@ export async function createEditRunAgentComment(opts = {}) {
         'Content-Type': 'application/json',
         'X-Access-Token': accessToken,
       },
-      body: JSON.stringify({
+      body: JSON.stringify(withSaasInboundScope({
         parent_comment_id: parentCommentId,
         installed_image_id: installedImageId,
         content,
@@ -72,7 +73,7 @@ export async function createEditRunAgentComment(opts = {}) {
             parent_comment_id: parentCommentId,
           },
         },
-      }),
+      })),
     });
     const bodyText = await r.text();
     let parsed = null;

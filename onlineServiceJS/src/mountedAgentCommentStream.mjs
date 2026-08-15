@@ -4,6 +4,7 @@
  */
 import { readPersistedTokenStore } from './bootstrapTokenStore.mjs';
 import { taskApiPrefix } from './saasTaskCloud.mjs';
+import { withSaasInboundScope } from './saasInboundScope.mjs';
 import { traceHeadersForOutbound } from './traceId.mjs';
 
 /**
@@ -63,7 +64,7 @@ export async function postMountedAgentChunk(opts) {
         'Content-Type': 'application/json',
         'X-Access-Token': accessToken,
       },
-      body: JSON.stringify({ chunk }),
+      body: JSON.stringify(withSaasInboundScope({ chunk })),
     });
     const bodyText = await r.text();
     if (!r.ok) {
@@ -105,7 +106,7 @@ export async function failMountedAgentComment(opts) {
         'Content-Type': 'application/json',
         'X-Access-Token': accessToken,
       },
-      body: JSON.stringify({ detail: String(opts?.detail || 'job failed').slice(0, 2000) }),
+      body: JSON.stringify(withSaasInboundScope({ detail: String(opts?.detail || 'job failed').slice(0, 2000) })),
     });
     const bodyText = await r.text();
     if (!r.ok) {

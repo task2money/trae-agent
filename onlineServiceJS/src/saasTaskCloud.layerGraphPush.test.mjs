@@ -83,6 +83,43 @@ test('publishLayerGraphSnapshotToSaas：POST layer-graph-push 且 body 含 layer
   }
 });
 
+test('publishLayerGraphSnapshotToSaas：COMMENT_ID 写入 layer-graph-push body', async () => {
+  const saved = snapshotEnv([...KEYS, 'COMMENT_ID', 'CONTAINER_NAME']);
+  let received = '';
+  const server = http.createServer((req, res) => {
+    const chunks = [];
+    req.on('data', (c) => chunks.push(c));
+    req.on('end', () => {
+      received = Buffer.concat(chunks).toString('utf8');
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    });
+  });
+  await new Promise((resolve, reject) => {
+    server.on('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const addr = server.address();
+  const port = typeof addr === 'object' && addr ? addr.port : 0;
+  try {
+    delete process.env.tenantId;
+    delete process.env.workspaceId;
+    delete process.env.taskId;
+    process.env.TaskApiEndPoint = `http://127.0.0.1:${port}/api/tenant/ta/workspace/ws1/task/td1/cloud`;
+    process.env.ACCESS_TOKEN = 'lg-cmt-token';
+    process.env.COMMENT_ID = 'cmt-a';
+    process.env.CONTAINER_NAME = 'task_td1_cmt-a';
+    const ok = await publishLayerGraphSnapshotToSaas({ layers: [{ layer_id: 'L1' }], jobs: [] });
+    assert.strictEqual(ok, true);
+    const body = JSON.parse(received);
+    assert.strictEqual(body.comment_id, 'cmt-a');
+    assert.strictEqual(body.container_name, 'task_td1_cmt-a');
+  } finally {
+    restoreEnv(saved);
+    await new Promise((resolve) => server.close(() => resolve(undefined)));
+  }
+});
+
 test('startSaasLayerGraphPushLoop：按间隔调用 getSnapshot 并推送', async () => {
   const saved = snapshotEnv(KEYS);
   let pushCount = 0;

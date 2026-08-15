@@ -4,6 +4,7 @@
 import { readPersistedTokenStore } from './bootstrapTokenStore.mjs';
 import { taskApiPrefix } from './saasTaskCloud.mjs';
 import { emitRuntimeEvent } from './runtimeEventLog.mjs';
+import { withSaasInboundScope } from './saasInboundScope.mjs';
 import { traceHeadersForOutbound } from './traceId.mjs';
 
 /**
@@ -112,7 +113,7 @@ export async function completeMountedAgentComment(opts) {
     const r = await fetchFn(url, {
       method: 'POST',
       headers,
-      body: JSON.stringify({ assistant_response: text }),
+      body: JSON.stringify(withSaasInboundScope({ assistant_response: text })),
     });
     const bodyText = await r.text();
     if (!r.ok) {
