@@ -1,6 +1,7 @@
 import { postJson } from './saasTaskCloud.mjs';
 import { collectRepoBranchPlans } from './bootstrapWorkBranch.mjs';
 import { collectRepoCloneJobs } from './bootstrapRepoCredentials.mjs';
+import { emitRuntimeEvent } from './runtimeEventLog.mjs';
 import {
   bootstrapStructuredPayload,
   buildRepoCloneCredentialsBootstrapError,
@@ -111,7 +112,17 @@ export async function fetchBootstrapRepoInputs(prefix, accessToken, timeoutSec) 
     { access_token: accessToken },
     timeoutSec
   );
-  const cloneJobs = collectRepoCloneJobs(detail);
+  const cloneJobs = collectRepoCloneJobs(detail, {
+    onSkippedNested: (count) => {
+      // 用户可见启动日志：关闭 auto_clone_nested_repos 时让「跳过子仓」成为正向证据（OPT-20260815-020）
+      emitRuntimeEvent('BOOTSTRAP_PHASE', {
+        phase: 'repo_clone_skip_nested',
+        message: `已跳过 ${count} 个子仓克隆（auto_clone_nested_repos=false）`,
+        consoleLine:
+          `[onlineServiceJS] BOOTSTRAP_PHASE=repo_clone_skip_nested 已跳过 ${count} 个子仓克隆（auto_clone_nested_repos=false）`,
+      });
+    },
+  });
   const urls = cloneJobs.map((j) => j.url);
   const branchPlans = collectRepoBranchPlans(detail);
   console.log(

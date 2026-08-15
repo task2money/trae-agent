@@ -9,9 +9,11 @@ import { appendOutboundReqLog } from './outboundReqLog.mjs';
  * 从 task-detail 收集待克隆仓库（URL + 可选 clone_alias / parent_repo_url）。
  * 优先 `git_repo_entries`；否则回退 `git_repos` 字符串列表。
  * 项目 `auto_clone_nested_repos=false` 时跳过带 parent_repo_url 的子仓（镜像侧门控）。
+ * @param {object} taskDetail
+ * @param {{ onSkippedNested?: (count: number) => void }} [opts] — 跳过 nested 时回调，供调用方写用户可见启动日志
  * @returns {{ url: string, cloneAlias: string, parentRepoUrl: string }[]}
  */
-export function collectRepoCloneJobs(taskDetail) {
+export function collectRepoCloneJobs(taskDetail, opts = {}) {
   const out = [];
   const seen = new Set();
   let skippedNested = 0;
@@ -83,6 +85,10 @@ export function collectRepoCloneJobs(taskDetail) {
     appendOutboundReqLog(
       `bootstrap-clone skip nested repos count=${skippedNested} reason=auto_clone_nested_repos=false`,
     );
+    // 用户可见启动日志由调用方在 bootstrap 时写（OPT-20260815-020）
+    if (typeof opts.onSkippedNested === 'function') {
+      opts.onSkippedNested(skippedNested);
+    }
   }
   return out;
 }
