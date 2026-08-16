@@ -50,9 +50,16 @@ class LLMClient:
 
         match self.provider:
             case LLMProvider.OPENAI:
-                from .openai_client import OpenAIClient
+                from .openai_client import (
+                    OpenAIClient,
+                    OpenAICompatClient,
+                    should_use_openai_responses_api,
+                )
 
-                self.client: BaseLLMClient = OpenAIClient(model_config)
+                if should_use_openai_responses_api(model_config.model_provider.base_url):
+                    self.client: BaseLLMClient = OpenAIClient(model_config)
+                else:
+                    self.client = OpenAICompatClient(model_config)
             case LLMProvider.ANTHROPIC:
                 from .anthropic_client import AnthropicClient
 

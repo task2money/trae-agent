@@ -4,6 +4,7 @@
 """OpenAI API client wrapper with tool integration."""
 
 import json
+import urllib.parse
 from typing import override
 
 import httpx
@@ -22,8 +23,74 @@ from trae_agent.tools.base import Tool, ToolCall, ToolResult
 from trae_agent.utils.config import ModelConfig
 from trae_agent.utils.llm_clients.base_client import BaseLLMClient
 from trae_agent.utils.llm_clients.llm_basics import LLMMessage, LLMResponse, LLMUsage
+from trae_agent.utils.llm_clients.openai_compatible_base import (
+    OpenAICompatibleClient,
+    ProviderConfig,
+)
 from trae_agent.utils.llm_clients.retry_utils import retry_with
 from trae_agent.utils.llm_clients.tool_call_json import parse_tool_call_arguments
+
+
+def should_use_openai_responses_api(base_url: str | None) -> bool:
+    """Official OpenAI endpoints use the Responses API.
+
+    SaaS LLM 代理与多数兼容网关只实现 `/v1/chat/completions`；当 base_url 指向
+    非官方主机时必须改用 chat.completions，否则会得到永久 404。base_url 为空时
+    SDK 默认指向 `api.openai.com`，仍走 Responses API。
+    """
+    raw = str(base_url or "").strip()
+    if not raw:
+        return True
+    try:
+        host = urllib.parse.urlparse(raw).netloc.lower()
+    except ValueError:
+        return False
+    if not host:
+        return False
+    return host == "api.openai.com" or host.endswith(".openai.com") or host.endswith(".openai.com.cn")
+
+
+class OpenAICompatProvider(ProviderConfig):
+    """OpenAI provider speaking chat.completions (non-official / SaaS proxy base_url)."""
+
+    def create_client(
+        self,
+        api_key: str,
+        base_url: str | None,
+        api_version: str | None,
+        timeout: float | None = None,
+    ) -> openai.OpenAI:
+        """Create an OpenAI client configured for chat.completions."""
+        effective_timeout = timeout or 120.0
+        http_client = httpx.Client(timeout=httpx.Timeout(effective_timeout, connect=60.0))
+        return openai.OpenAI(api_key=api_key, base_url=base_url, http_client=http_client)
+
+    def get_service_name(self) -> str:
+        """Get the service name for retry logging."""
+        return "OpenAI-compatible"
+
+    def get_provider_name(self) -> str:
+        """Get the provider name for trajectory recording."""
+        return "openai"
+
+    def get_extra_headers(self) -> dict[str, str]:
+        """Get any extra headers needed for the API call."""
+        return {}
+
+    def supports_tool_calling(self, model_name: str) -> bool:
+        """OpenAI-compatible endpoints generally support tool calling."""
+        return True
+
+
+class OpenAICompatClient(OpenAICompatibleClient):
+    """OpenAI chat.completions client used when base_url is not api.openai.com.
+
+    Keeps the same public surface as OpenAIClient but speaks `/v1/chat/completions`,
+    which SaaS LLM proxies and compatible gateways implement.
+    """
+
+    def __init__(self, model_config: ModelConfig):
+        super().__init__(model_config, OpenAICompatProvider())
 
 
 class OpenAIClient(BaseLLMClient):
