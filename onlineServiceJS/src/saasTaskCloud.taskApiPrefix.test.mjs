@@ -31,52 +31,55 @@ const KEYS = [
   'DOCKER_HOST_GATEWAY_IP',
 ];
 
-test('taskApiPrefix：浏览器任务详情路径 /tenant/.../task-detail/{task}', () => {
+test('taskApiPrefix：浏览器任务详情路径无 COMMENT_ID 时拒绝旧 /cloud', () => {
   const saved = snapshotEnv(KEYS);
   try {
     delete process.env.tenantId;
     delete process.env.workspaceId;
     delete process.env.taskId;
+    delete process.env.COMMENT_ID;
     process.env.TaskApiEndPoint =
       'http://aidevpm.com/tenant/827923618468040704/workspace/827923618602258432/task-detail/840502733785767936/';
-    assert.strictEqual(
-      taskApiPrefix(),
-      'http://aidevpm.com/api/tenant/827923618468040704/workspace/827923618602258432/task/840502733785767936/cloud'
+    assert.throws(
+      () => taskApiPrefix(),
+      /requires \/comment\/\{cid\}\//,
     );
   } finally {
     restoreEnv(saved);
   }
 });
 
-test('taskApiPrefix：保留标准 /api/tenant/.../task/.../cloud 路径', () => {
+test('taskApiPrefix：旧 /api/tenant/.../task/.../cloud 无 COMMENT_ID 时拒绝', () => {
   const saved = snapshotEnv(KEYS);
   try {
     delete process.env.tenantId;
     delete process.env.workspaceId;
     delete process.env.taskId;
+    delete process.env.COMMENT_ID;
     process.env.TaskApiEndPoint =
       'https://api.example.com/api/tenant/a/workspace/b/task/c/cloud';
-    assert.strictEqual(
-      taskApiPrefix(),
-      'https://api.example.com/api/tenant/a/workspace/b/task/c/cloud'
+    assert.throws(
+      () => taskApiPrefix(),
+      /requires \/comment\/\{cid\}\//,
     );
   } finally {
     restoreEnv(saved);
   }
 });
 
-test('taskApiPrefix：仅设 TASK_API_ENDPOINT（docker -e 常见写法）时与 TaskApiEndPoint 等价', () => {
+test('taskApiPrefix：仅设旧 TASK_API_ENDPOINT 无 COMMENT_ID 时拒绝', () => {
   const saved = snapshotEnv(KEYS);
   try {
     delete process.env.TaskApiEndPoint;
     delete process.env.tenantId;
     delete process.env.workspaceId;
     delete process.env.taskId;
+    delete process.env.COMMENT_ID;
     process.env.TASK_API_ENDPOINT =
       'http://api.aidevpm.com/api/tenant/827923618468040704/workspace/827923618602258432/task/840502733785767936/cloud';
-    assert.strictEqual(
-      taskApiPrefix(),
-      'http://api.aidevpm.com/api/tenant/827923618468040704/workspace/827923618602258432/task/840502733785767936/cloud'
+    assert.throws(
+      () => taskApiPrefix(),
+      /requires \/comment\/\{cid\}\//,
     );
   } finally {
     restoreEnv(saved);
@@ -119,17 +122,18 @@ test('taskApiPrefix：旧前缀 + COMMENT_ID 补上 /comment/{cid}/', () => {
   }
 });
 
-test('taskApiPrefix：/api/.../task-detail/{id}', () => {
+test('taskApiPrefix：/api/.../task-detail/{id} + COMMENT_ID 重建新前缀', () => {
   const saved = snapshotEnv(KEYS);
   try {
     delete process.env.tenantId;
     delete process.env.workspaceId;
     delete process.env.taskId;
+    process.env.COMMENT_ID = 'cmt_z';
     process.env.TaskApiEndPoint =
       'https://api.example.com/api/tenant/x/workspace/y/task-detail/z/';
     assert.strictEqual(
       taskApiPrefix(),
-      'https://api.example.com/api/tenant/x/workspace/y/task/z/cloud'
+      'https://api.example.com/api/tenant/x/workspace/y/task/z/comment/cmt_z/cloud'
     );
   } finally {
     restoreEnv(saved);

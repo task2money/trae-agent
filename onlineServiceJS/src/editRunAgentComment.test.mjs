@@ -8,8 +8,8 @@ import {
 
 test('buildContainerAgentCreateUrl strips /cloud suffix', () => {
   assert.equal(
-    buildContainerAgentCreateUrl(() => 'https://api.example/t/w/task/x/cloud'),
-    'https://api.example/t/w/task/x/container-agent-comments',
+    buildContainerAgentCreateUrl(() => 'https://api.example/t/w/task/x/comment/cmt/cloud'),
+    'https://api.example/t/w/task/x/comment/cmt/container-agent-comments',
   );
 });
 
@@ -19,7 +19,7 @@ test('createEditRunAgentComment posts with X-Access-Token', async () => {
     parentCommentId: 'p1',
     installedImageId: 'img1',
     accessToken: 'tok',
-    prefixFn: () => 'https://api.example/t/w/task/x/cloud',
+    prefixFn: () => 'https://api.example/t/w/task/x/comment/cmt/cloud',
     fetchFn: async (url, init) => {
       calls.push({ url, init });
       return {
@@ -31,7 +31,7 @@ test('createEditRunAgentComment posts with X-Access-Token', async () => {
   });
   assert.equal(result.ok, true);
   assert.equal(result.id, 'agent-9');
-  assert.equal(calls[0].url, 'https://api.example/t/w/task/x/container-agent-comments');
+  assert.equal(calls[0].url, 'https://api.example/t/w/task/x/comment/cmt/container-agent-comments');
   assert.equal(calls[0].init.headers['X-Access-Token'], 'tok');
   const body = JSON.parse(calls[0].init.body);
   assert.equal(body.parent_comment_id, 'p1');
@@ -48,7 +48,7 @@ test('createEditRunAgentComment body 带 COMMENT_ID', async () => {
       parentCommentId: 'p1',
       installedImageId: 'img1',
       accessToken: 'tok',
-      prefixFn: () => 'https://api.example/t/w/task/x/cloud',
+      prefixFn: () => 'https://api.example/t/w/task/x/comment/cmt/cloud',
       fetchFn: async (url, init) => {
         calls.push(init);
         return {

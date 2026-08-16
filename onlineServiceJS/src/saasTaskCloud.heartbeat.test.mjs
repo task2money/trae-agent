@@ -60,7 +60,7 @@ test('postContainerHeartbeatToSaas：POST .../heartbeat/ 且 body 含 access_tok
     delete process.env.tenantId;
     delete process.env.workspaceId;
     delete process.env.taskId;
-    process.env.TaskApiEndPoint = `http://127.0.0.1:${port}/api/tenant/ta/workspace/ws1/task/td1/cloud`;
+    process.env.TaskApiEndPoint = `http://127.0.0.1:${port}/api/tenant/ta/workspace/ws1/task/td1/comment/cmt-a/cloud`;
     process.env.ACCESS_TOKEN = 'hb-test-token';
     const ok = await postContainerHeartbeatToSaas('ping-msg');
     assert.strictEqual(ok, true);
@@ -103,7 +103,7 @@ test('postContainerHeartbeatToSaas：COMMENT_ID/CONTAINER_NAME 写入 heartbeat 
     delete process.env.tenantId;
     delete process.env.workspaceId;
     delete process.env.taskId;
-    process.env.TaskApiEndPoint = `http://127.0.0.1:${port}/api/tenant/ta/workspace/ws1/task/td1/cloud`;
+    process.env.TaskApiEndPoint = `http://127.0.0.1:${port}/api/tenant/ta/workspace/ws1/task/td1/comment/cmt-a/cloud`;
     process.env.ACCESS_TOKEN = 'hb-scope-token';
     process.env.COMMENT_ID = ' cmt_42 ';
     process.env.CONTAINER_NAME = 'task_1_cmt_42';
@@ -152,7 +152,7 @@ test('postContainerHeartbeatToSaas：兼容 SaaS 将 seq 序列化为字符串�
     delete process.env.tenantId;
     delete process.env.workspaceId;
     delete process.env.taskId;
-    process.env.TaskApiEndPoint = `http://127.0.0.1:${port}/api/tenant/ta/workspace/ws1/task/td1/cloud`;
+    process.env.TaskApiEndPoint = `http://127.0.0.1:${port}/api/tenant/ta/workspace/ws1/task/td1/comment/cmt-a/cloud`;
     process.env.ACCESS_TOKEN = 'hb-str-seq';
     assert.strictEqual(await postContainerHeartbeatToSaas('r1'), true);
     assert.strictEqual(await postContainerHeartbeatToSaas('r2'), true);

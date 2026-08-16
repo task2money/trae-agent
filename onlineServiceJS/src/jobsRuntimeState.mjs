@@ -35,10 +35,20 @@ export function setLayerQueues(next) {
   layerQueues = next;
 }
 
-export function recordJobEvent(jobId, phase, message = '') {
+export function recordJobEvent(jobId, phase, message = '', extra = {}) {
   const events = jobEvents.get(jobId) || [];
-  events.push({ phase, message, ts: Date.now() });
+  const seq = events.length;
+  const row = { phase, message, ts: Date.now(), seq };
+  if (extra && typeof extra === 'object' && !Array.isArray(extra)) {
+    if (extra.step_number != null && Number.isFinite(Number(extra.step_number))) {
+      row.step_number = Math.floor(Number(extra.step_number));
+    }
+    if (extra.delivery_summary != null) row.delivery_summary = String(extra.delivery_summary);
+    if (extra.state != null) row.state = String(extra.state);
+  }
+  events.push(row);
   jobEvents.set(jobId, events);
+  return row;
 }
 
 /**

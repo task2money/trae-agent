@@ -1655,7 +1655,6 @@ dependencies = [
     { name = "openai" },
     { name = "pexpect" },
     { name = "pydantic" },
-    { name = "pyinstaller" },
     { name = "python-dotenv" },
     { name = "pyyaml" },
     { name = "rich" },
@@ -1682,6 +1681,7 @@ test = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "pyinstaller" },
     { name = "types-pyyaml" },
 ]
 
@@ -1700,7 +1700,6 @@ requires-dist = [
     { name = "pexpect", specifier = ">=4.9.0" },
     { name = "pre-commit", marker = "extra == 'test'", specifier = ">=4.2.0" },
     { name = "pydantic", specifier = ">=2.0.0" },
-    { name = "pyinstaller", specifier = "==6.15.0" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8.0.0" },
     { name = "pytest-asyncio", marker = "extra == 'test'", specifier = ">=0.23.0" },
     { name = "pytest-cov", marker = "extra == 'test'", specifier = ">=4.0.0" },
@@ -1719,7 +1718,10 @@ requires-dist = [
 provides-extras = ["test", "evaluation"]
 
 [package.metadata.requires-dev]
-dev = [{ name = "types-pyyaml", specifier = ">=6.0.12.20250516" }]
+dev = [
+    { name = "pyinstaller", specifier = "==6.15.0" },
+    { name = "types-pyyaml", specifier = ">=6.0.12.20250516" },
+]
 
 [[package]]
 name = "tree-sitter"

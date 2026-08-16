@@ -35,11 +35,11 @@ test('composeAutoRunPrBackfillReply formats single and clean skip', () => {
 
 test('buildContainerAgentCompleteUrl strips /cloud suffix', () => {
   const url = buildContainerAgentCompleteUrl('agent-9', () =>
-    'https://api.example/api/tenant/t/workspace/w/task/task1/cloud',
+    'https://api.example/api/tenant/t/workspace/w/task/task1/comment/cmt_1/cloud',
   );
   assert.equal(
     url,
-    'https://api.example/api/tenant/t/workspace/w/task/task1/container-agent-comments/agent-9/complete',
+    'https://api.example/api/tenant/t/workspace/w/task/task1/comment/cmt_1/container-agent-comments/agent-9/complete',
   );
 });
 
@@ -92,7 +92,7 @@ test('completeMountedAgentComment body 带 COMMENT_ID', async () => {
       agentCommentId: 'agent-9',
       assistantResponse: 'done',
       accessToken: 'tok',
-      prefixFn: () => 'https://api.example/api/tenant/t/workspace/w/task/task1/cloud',
+      prefixFn: () => 'https://api.example/api/tenant/t/workspace/w/task/task1/comment/cmt_1/cloud',
       fetchFn: async (_url, init) => {
         calls.push(init);
         return { ok: true, status: 200, text: async () => '{}' };

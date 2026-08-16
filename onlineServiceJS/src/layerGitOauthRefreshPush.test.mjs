@@ -12,6 +12,7 @@ const ENV_KEYS = [
   'tenantId',
   'workspaceId',
   'taskId',
+  'COMMENT_ID',
   'ACCESS_TOKEN',
   'ONLINE_PROJECT_STATE_ROOT',
   'TRAE_LAYER_GITHUB_OAUTH_FETCH_TIMEOUT_SEC',
@@ -63,6 +64,7 @@ describe('layerGitOauthRefreshPush', () => {
 
   beforeEach(() => {
     envSnap = saveEnv();
+    delete process.env.COMMENT_ID;
   });
 
   afterEach(() => {
@@ -95,7 +97,7 @@ describe('layerGitOauthRefreshPush', () => {
 
   test('runLayerOauthRefreshPush 缺少 ACCESS_TOKEN 时 503', async () => {
     process.env.TaskApiEndPoint =
-      'http://127.0.0.1:59999/api/tenant/t1/workspace/w1/task/task1/cloud';
+      'http://127.0.0.1:59999/api/tenant/t1/workspace/w1/task/task1/comment/cmt_1/cloud';
     delete process.env.ACCESS_TOKEN;
     const mod = await import(`./layerGitOauthRefreshPush.mjs?noaccess=${Date.now()}`);
     const { httpStatus, payload } = await mod.runLayerOauthRefreshPush({ layerId: 'layer-x' });
@@ -105,7 +107,7 @@ describe('layerGitOauthRefreshPush', () => {
 
   test('runLayerOauthRefreshPush 读取超时 env<30 时夹逼为 30，且记录 begin/token-fetch/fail', async () => {
     const { stateRoot, layerId, gitPushLog } = prepareLayerWithGithubRepo('oauth-timeout-low');
-    process.env.TaskApiEndPoint = 'http://127.0.0.1:9/api/tenant/t1/workspace/w1/task/task1/cloud';
+    process.env.TaskApiEndPoint = 'http://127.0.0.1:9/api/tenant/t1/workspace/w1/task/task1/comment/cmt_1/cloud';
     process.env.ACCESS_TOKEN = 'token_for_timeout_low';
     process.env.TRAE_LAYER_GITHUB_OAUTH_FETCH_TIMEOUT_SEC = '5';
     const mod = await import(`./layerGitOauthRefreshPush.mjs?timeoutlow=${Date.now()}`);
@@ -126,7 +128,7 @@ describe('layerGitOauthRefreshPush', () => {
 
   test('runLayerOauthRefreshPush 读取超时 env>300 时夹逼为 300', async () => {
     const { stateRoot, layerId, gitPushLog } = prepareLayerWithGithubRepo('oauth-timeout-high');
-    process.env.TaskApiEndPoint = 'http://127.0.0.1:9/api/tenant/t1/workspace/w1/task/task1/cloud';
+    process.env.TaskApiEndPoint = 'http://127.0.0.1:9/api/tenant/t1/workspace/w1/task/task1/comment/cmt_1/cloud';
     process.env.ACCESS_TOKEN = 'token_for_timeout_high';
     process.env.TRAE_LAYER_GITHUB_OAUTH_FETCH_TIMEOUT_SEC = '999';
     const mod = await import(`./layerGitOauthRefreshPush.mjs?timeouthigh=${Date.now()}`);
@@ -145,7 +147,7 @@ describe('layerGitOauthRefreshPush', () => {
 
   test('runLayerOauthRefreshPush 超时 env 缺省时使用 120', async () => {
     const { stateRoot, layerId, gitPushLog } = prepareLayerWithGithubRepo('oauth-timeout-default');
-    process.env.TaskApiEndPoint = 'http://127.0.0.1:9/api/tenant/t1/workspace/w1/task/task1/cloud';
+    process.env.TaskApiEndPoint = 'http://127.0.0.1:9/api/tenant/t1/workspace/w1/task/task1/comment/cmt_1/cloud';
     process.env.ACCESS_TOKEN = 'token_for_timeout_default';
     delete process.env.TRAE_LAYER_GITHUB_OAUTH_FETCH_TIMEOUT_SEC;
     const mod = await import(`./layerGitOauthRefreshPush.mjs?timeoutdefault=${Date.now()}`);
@@ -176,14 +178,14 @@ describe('layerGitOauthRefreshPush', () => {
     );
 
     const server = http.createServer((req, res) => {
-      if (req.method === 'POST' && req.url === '/api/tenant/t1/workspace/w1/task/task1/cloud/server-container-token/task-detail/') {
+      if (req.method === 'POST' && req.url === '/api/tenant/t1/workspace/w1/task/task1/comment/cmt_1/cloud/server-container-token/task-detail/') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ task: { target_branch: 'feature/demo' } }));
         return;
       }
       if (
         req.method === 'POST' &&
-        req.url === '/api/tenant/t1/workspace/w1/task/task1/cloud/server-container-token/layer-github-oauth-access-tokens/'
+        req.url === '/api/tenant/t1/workspace/w1/task/task1/comment/cmt_1/cloud/server-container-token/layer-github-oauth-access-tokens/'
       ) {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(
@@ -208,7 +210,7 @@ describe('layerGitOauthRefreshPush', () => {
       assert(addr && typeof addr === 'object');
       const base = `http://127.0.0.1:${addr.port}`;
 
-      process.env.TaskApiEndPoint = `${base}/api/tenant/t1/workspace/w1/task/task1/cloud`;
+      process.env.TaskApiEndPoint = `${base}/api/tenant/t1/workspace/w1/task/task1/comment/cmt_1/cloud`;
       process.env.ACCESS_TOKEN = 'container_access_token';
       const mod = await import(`./layerGitOauthFetchTokenFiles.mjs?fetchfiles=${Date.now()}`);
       const res = await mod.runLayerOauthFetchTokenFiles({
@@ -240,7 +242,7 @@ describe('layerGitOauthRefreshPush', () => {
       requests.push(`${req.method} ${req.url}`);
       if (
         req.method === 'POST' &&
-        req.url === '/api/tenant/t1/workspace/w1/task/task1/cloud/server-container-token/layer-github-oauth-access-tokens/'
+        req.url === '/api/tenant/t1/workspace/w1/task/task1/comment/cmt_1/cloud/server-container-token/layer-github-oauth-access-tokens/'
       ) {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(
@@ -265,7 +267,7 @@ describe('layerGitOauthRefreshPush', () => {
       assert(addr && typeof addr === 'object');
       const base = `http://127.0.0.1:${addr.port}`;
 
-      process.env.TaskApiEndPoint = `${base}/api/tenant/t1/workspace/w1/task/task1/cloud`;
+      process.env.TaskApiEndPoint = `${base}/api/tenant/t1/workspace/w1/task/task1/comment/cmt_1/cloud`;
       process.env.ACCESS_TOKEN = 'container_access_token_no_branch';
       const mod = await import(`./layerGitOauthFetchTokenFiles.mjs?fetchfilesnobranch=${Date.now()}`);
       const res = await mod.runLayerOauthFetchTokenFiles({
@@ -283,7 +285,7 @@ describe('layerGitOauthRefreshPush', () => {
     assert.equal(fs.readFileSync(path.join(repoDir, '.task2app_access_token'), 'utf8'), 'token_demo_no_branch\n');
     assert.deepEqual(
       requests,
-      ['POST /api/tenant/t1/workspace/w1/task/task1/cloud/server-container-token/layer-github-oauth-access-tokens/'],
+      ['POST /api/tenant/t1/workspace/w1/task/task1/comment/cmt_1/cloud/server-container-token/layer-github-oauth-access-tokens/'],
     );
 
     fs.rmSync(stateRoot, { recursive: true, force: true });
@@ -294,7 +296,7 @@ describe('layerGitOauthRefreshPush', () => {
     const server = http.createServer((req, res) => {
       if (
         req.method === 'POST' &&
-        req.url === '/api/tenant/t1/workspace/w1/task/task1/cloud/server-container-token/layer-github-oauth-access-tokens/'
+        req.url === '/api/tenant/t1/workspace/w1/task/task1/comment/cmt_1/cloud/server-container-token/layer-github-oauth-access-tokens/'
       ) {
         res.writeHead(409, { 'Content-Type': 'application/json' });
         res.end(
@@ -320,7 +322,7 @@ describe('layerGitOauthRefreshPush', () => {
       assert(addr && typeof addr === 'object');
       const base = `http://127.0.0.1:${addr.port}`;
 
-      process.env.TaskApiEndPoint = `${base}/api/tenant/t1/workspace/w1/task/task1/cloud`;
+      process.env.TaskApiEndPoint = `${base}/api/tenant/t1/workspace/w1/task/task1/comment/cmt_1/cloud`;
       process.env.ACCESS_TOKEN = 'container_access_token_structured_error';
       const mod = await import(`./layerGitOauthFetchTokenFiles.mjs?structured=${Date.now()}`);
       result = await mod.runLayerOauthFetchTokenFiles({
@@ -347,16 +349,16 @@ describe('layerGitOauthRefreshPush', () => {
     const server = http.createServer((req, res) => {
       if (
         req.method === 'POST' &&
-        req.url === '/api/tenant/t1/workspace/w1/task/task1/cloud/server-container-token/layer-github-oauth-access-tokens/'
+        req.url === '/api/tenant/t1/workspace/w1/task/task1/comment/cmt_1/cloud/server-container-token/layer-github-oauth-access-tokens/'
       ) {
         res.writeHead(409, { 'Content-Type': 'application/json' });
         res.end(
           JSON.stringify({
-            detail: longDetail,
-            detail_safe: '请先在任务详情绑定 GitHub 授权账号',
             error_code: 'BINDING_MISSING',
             failed_stage: 'binding_check',
             retryable: false,
+            detail_safe: '请先在任务详情绑定 GitHub 授权账号',
+            detail: longDetail,
             github_auth_by_repo: {},
           }),
         );
@@ -373,7 +375,7 @@ describe('layerGitOauthRefreshPush', () => {
       assert(addr && typeof addr === 'object');
       const base = `http://127.0.0.1:${addr.port}`;
 
-      process.env.TaskApiEndPoint = `${base}/api/tenant/t1/workspace/w1/task/task1/cloud`;
+      process.env.TaskApiEndPoint = `${base}/api/tenant/t1/workspace/w1/task/task1/comment/cmt_1/cloud`;
       process.env.ACCESS_TOKEN = 'container_access_token_structured_error_long';
       const mod = await import(`./layerGitOauthFetchTokenFiles.mjs?structuredlong=${Date.now()}`);
       result = await mod.runLayerOauthFetchTokenFiles({
@@ -400,7 +402,7 @@ describe('layerGitOauthRefreshPush', () => {
     const server = http.createServer((req, res) => {
       if (
         req.method === 'POST' &&
-        req.url === '/api/tenant/t1/workspace/w1/task/task1/cloud/server-container-token/layer-github-oauth-access-tokens/'
+        req.url === '/api/tenant/t1/workspace/w1/task/task1/comment/cmt_1/cloud/server-container-token/layer-github-oauth-access-tokens/'
       ) {
         // 故意不返回响应，触发 postJson 的 AbortController 超时路径
         return;
@@ -420,7 +422,7 @@ describe('layerGitOauthRefreshPush', () => {
       assert(addr && typeof addr === 'object');
       const base = `http://127.0.0.1:${addr.port}`;
 
-      process.env.TaskApiEndPoint = `${base}/api/tenant/t1/workspace/w1/task/task1/cloud`;
+      process.env.TaskApiEndPoint = `${base}/api/tenant/t1/workspace/w1/task/task1/comment/cmt_1/cloud`;
       process.env.ACCESS_TOKEN = 'container_access_token_timeout_fallback';
       process.env.TRAE_LAYER_GITHUB_OAUTH_FETCH_TIMEOUT_SEC = '1';
       process.env.TRAE_LAYER_GITHUB_OAUTH_FETCH_TIMEOUT_MIN_SEC = '1';
@@ -477,7 +479,7 @@ describe('layerGitOauthRefreshPush', () => {
 
     let result;
     try {
-      process.env.TaskApiEndPoint = 'http://localhost:8001/api/tenant/t1/workspace/w1/task/task1/cloud';
+      process.env.TaskApiEndPoint = 'http://localhost:8001/api/tenant/t1/workspace/w1/task/task1/comment/cmt_1/cloud';
       process.env.ACCESS_TOKEN = 'container_access_token_loopback_fallback';
       const mod = await import(`./layerGitOauthFetchTokenFiles.mjs?loopbackfallback=${Date.now()}`);
       result = await mod.runLayerOauthFetchTokenFiles({
@@ -493,11 +495,11 @@ describe('layerGitOauthRefreshPush', () => {
     assert.equal(calls.length, 2);
     assert.match(
       calls[0],
-      /http:\/\/localhost:8001\/api\/tenant\/t1\/workspace\/w1\/task\/task1\/cloud\/server-container-token\/layer-github-oauth-access-tokens\//,
+      /http:\/\/localhost:8001\/api\/tenant\/t1\/workspace\/w1\/task\/task1\/comment\/cmt_1\/cloud\/server-container-token\/layer-github-oauth-access-tokens\//,
     );
     assert.match(
       calls[1],
-      /http:\/\/127\.0\.0\.1:8001\/api\/tenant\/t1\/workspace\/w1\/task\/task1\/cloud\/server-container-token\/layer-github-oauth-access-tokens\//,
+      /http:\/\/127\.0\.0\.1:8001\/api\/tenant\/t1\/workspace\/w1\/task\/task1\/comment\/cmt_1\/cloud\/server-container-token\/layer-github-oauth-access-tokens\//,
     );
     assert.equal(fs.readFileSync(path.join(repoDir, '.task2app_access_token'), 'utf8'), 'token_loopback_ok\n');
 
@@ -554,7 +556,7 @@ describe('layerGitOauthRefreshPush', () => {
       const addr = server.address();
       assert(addr && typeof addr === 'object');
       const base = `http://127.0.0.1:${addr.port}`;
-      process.env.TaskApiEndPoint = `${base}/api/tenant/t1/workspace/w1/task/task1/cloud`;
+      process.env.TaskApiEndPoint = `${base}/api/tenant/t1/workspace/w1/task/task1/comment/cmt_1/cloud`;
       process.env.ACCESS_TOKEN = 'container_access_token_gitlab';
       const mod = await import(`./layerGitOauthFetchTokenFiles.mjs?gitlablocal=${Date.now()}`);
       const res = await mod.runLayerOauthFetchTokenFiles({ layerId, targetBranch: '' });

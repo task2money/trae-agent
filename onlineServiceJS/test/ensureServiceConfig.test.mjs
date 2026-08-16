@@ -28,7 +28,7 @@ test('readOrPullServiceConfig：本地缺失时从 SaaS feature-params-env 拉�
     configPath: () => '/tmp/fake/service_config.yaml',
     existsSync: () => false,
     readFileSync: () => 'agents:\n  trae_agent:\n    max_steps: 32\n',
-    taskApiPrefix: () => 'http://saas.example/api/tenant/t/workspace/w/task/x/cloud',
+    taskApiPrefix: () => 'http://saas.example/api/tenant/t/workspace/w/task/x/comment/cmt/cloud',
     accessToken: () => 'tok_test',
     timeoutSec: () => 7,
     postJson: async (url, body, timeout, opts) => {
@@ -69,7 +69,7 @@ test('readOrPullServiceConfig：SaaS 响应缺 env 时失败且不静默成功',
       readOrPullServiceConfig({
         configPath: () => '/tmp/fake/service_config.yaml',
         existsSync: () => false,
-        taskApiPrefix: () => 'http://saas.example/api/tenant/t/workspace/w/task/x/cloud',
+        taskApiPrefix: () => 'http://saas.example/api/tenant/t/workspace/w/task/x/comment/cmt/cloud',
         accessToken: () => 'tok',
         timeoutSec: () => 5,
         postJson: async () => ({}),

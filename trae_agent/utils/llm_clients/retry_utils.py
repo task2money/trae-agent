@@ -9,23 +9,61 @@ from typing import Any, Callable, TypeVar
 
 T = TypeVar("T")
 
+# Gateway/proxy 在上游重启、路由尚未注册时常返回这些状态；与永久 4xx 区分。
+_TRANSIENT_HTTP_STATUS = frozenset({404, 408, 409, 425, 429})
+_PERMANENT_NOT_FOUND_MARKERS = (
+    "model_not_found",
+    "the model `",
+    "no such model",
+    "invalid model",
+    "does not exist or you do not have access",
+)
+
+
+def _exception_blob(exc: Exception) -> str:
+    parts = [str(exc)]
+    body = getattr(exc, "body", None)
+    if body is not None:
+        parts.append(str(body))
+    message = getattr(exc, "message", None)
+    if message is not None:
+        parts.append(str(message))
+    return " ".join(parts).lower()
+
+
+def _is_permanent_not_found(exc: Exception) -> bool:
+    blob = _exception_blob(exc)
+    return any(marker in blob for marker in _PERMANENT_NOT_FOUND_MARKERS)
+
+
+def _http_status_code(exc: Exception) -> int | None:
+    raw = getattr(exc, "status_code", None)
+    if raw is None:
+        raw = getattr(exc, "status", None)
+    try:
+        code = int(raw)
+    except (TypeError, ValueError):
+        return None
+    if code <= 0:
+        return None
+    return code
+
 
 def _should_retry_api_error(exc: Exception) -> bool:
-    """Retry only on rate limits and transient server/network failures — not on bad requests."""
-    try:
-        from openai import APIStatusError
+    """Retry rate limits, 5xx, and gateway 404/408 during SaaS restart — not bad requests.
 
-        if isinstance(exc, APIStatusError) and exc.status_code is not None:
-            code = exc.status_code
-            if code == 429:
-                return True
-            if code >= 500:
-                return True
-            if 400 <= code < 500:
-                return False
-    except ImportError:
-        pass
-    return True
+    OpenAI SDK raises APIStatusError; Anthropic/httpx 也可能带 status_code。
+    空 body 的 404（APISIX Route Not Found / nginx 默认页）视为瞬时；
+    明确的 model_not_found 才视为永久失败。
+    """
+    code = _http_status_code(exc)
+    if code is None:
+        return True
+    if code >= 500:
+        return True
+    if code in _TRANSIENT_HTTP_STATUS:
+        return not (code == 404 and _is_permanent_not_found(exc))
+    return not 400 <= code < 500
 
 
 def retry_with(

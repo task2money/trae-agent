@@ -89,7 +89,7 @@ test('maybeProactiveRefreshAccess refreshes when within skew', async () => {
       refreshToken: 'rt-1',
       expiresAt: '2026-07-19 12:00:00',
     }),
-    taskPrefix: () => 'http://example/api/tenant/t/workspace/w/task/task1/cloud',
+    taskPrefix: () => 'http://example/api/tenant/t/workspace/w/task/task1/comment/cmt_1/cloud',
     refreshAccess: async (prefix, rt) => {
       calls.push({ prefix, rt });
       return { accessToken: 'at-new', expiresAt: '2026-07-19 13:00:00' };

@@ -17,7 +17,11 @@ import {
   formatErrorWithCause,
   postJsonTransientRetryConfigFromEnv,
 } from './saasPostJson.mjs';
-export { postJson, postJsonTransientRetryConfigFromEnv } from './saasPostJson.mjs';
+export {
+  postJson,
+  postJsonTransientRetryConfigFromEnv,
+  isTransientHttpStatus,
+} from './saasPostJson.mjs';
 /** 容器心跳 POST 的 reqLogs 文件名（与其它出站 outbound.log 分离） */
 export const HEARTBEAT_REQ_LOG_FILE = 'heartbeat.log';
 
@@ -40,8 +44,9 @@ export function rewriteDockerInternal(url) {
 }
 
 /**
- * 任务云回调前缀：`.../api/tenant/.../workspace/.../task/...[/comment/{cid}]/cloud`。
+ * 任务云回调前缀：`.../api/tenant/.../workspace/.../task/.../comment/{cid}/cloud`。
  * 优先读环境变量 tenantId / workspaceId / taskId / COMMENT_ID；若缺失则从 TaskApiEndPoint 路径解析。
+ * 无 commentId 时抛错，禁止回退旧 `…/task/{id}/cloud`。
  */
 export function taskApiPrefix() {
   const raw = rewriteDockerInternal(
@@ -72,6 +77,11 @@ export function taskApiPrefix() {
   if (!tenant || !workspace || !task) {
     throw new Error(
       'TaskApiEndPoint/TASK_API_ENDPOINT set but tenantId/workspaceId/taskId missing (请在容器环境注入 tenantId/workspaceId/taskId，或使用可解析路径：/api/tenant/.../task/... 或 /api/.../task-detail/... 或浏览器任务页 /tenant/.../task-detail/...)'
+    );
+  }
+  if (!comment) {
+    throw new Error(
+      'TaskApiEndPoint/TASK_API_ENDPOINT requires /comment/{cid}/ (inject COMMENT_ID or use path …/task/{taskId}/comment/{cid}/cloud)'
     );
   }
 

@@ -11,6 +11,7 @@ const KEYS = [
   'tenantId',
   'workspaceId',
   'taskId',
+  'COMMENT_ID',
   'DOCKER_GATEWAY_HOSTNAME',
   'DOCKER_HOST_GATEWAY_IP',
 ];
@@ -37,10 +38,11 @@ test.describe('taskApiPrefix 与任务详情页 URL 兼容', () => {
       delete process.env.tenantId;
       delete process.env.workspaceId;
       delete process.env.taskId;
+      process.env.COMMENT_ID = 'cmt_spa';
       process.env.TaskApiEndPoint =
         'http://aidevpm.com/tenant/827923618468040704/workspace/827923618602258432/task-detail/840502733785767936/';
       expect(taskApiPrefix()).toBe(
-        'http://aidevpm.com/api/tenant/827923618468040704/workspace/827923618602258432/task/840502733785767936/cloud'
+        'http://aidevpm.com/api/tenant/827923618468040704/workspace/827923618602258432/task/840502733785767936/comment/cmt_spa/cloud'
       );
     } finally {
       restoreEnv(saved);
@@ -53,8 +55,9 @@ test.describe('taskApiPrefix 与任务详情页 URL 兼容', () => {
       process.env.tenantId = 'env-tenant';
       process.env.workspaceId = 'env-ws';
       process.env.taskId = 'env-task';
+      process.env.COMMENT_ID = 'cmt_env';
       process.env.TaskApiEndPoint = 'https://x.com/tenant/a/workspace/b/task-detail/c/';
-      expect(taskApiPrefix()).toBe('https://x.com/api/tenant/env-tenant/workspace/env-ws/task/env-task/cloud');
+      expect(taskApiPrefix()).toBe('https://x.com/api/tenant/env-tenant/workspace/env-ws/task/env-task/comment/cmt_env/cloud');
     } finally {
       restoreEnv(saved);
     }

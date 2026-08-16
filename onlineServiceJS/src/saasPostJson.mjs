@@ -68,10 +68,28 @@ function normalizePostJsonError(err) {
   return wrapped;
 }
 
+/** APISIX/nginx 在上游重启、路由未注册时常见；401/400/403 仍视为永久业务错误。 */
+export const TRANSIENT_HTTP_STATUS = new Set([404, 408, 409, 425, 429, 502, 503, 504]);
+
+export function isTransientHttpStatus(status) {
+  const n = Number(status);
+  return Number.isFinite(n) && TRANSIENT_HTTP_STATUS.has(n);
+}
+
+function httpStatusFromError(err) {
+  const flagged = Number(err?.retryableHttpStatus);
+  if (Number.isFinite(flagged) && flagged > 0) return flagged;
+  const msg = String(err?.message || err || '');
+  const m = msg.match(/\bHTTP\s+(\d{3})\b/i);
+  if (m) return Number(m[1]);
+  return 0;
+}
+
 function isRetryableLoopbackFetchError(err) {
   if (!err || typeof err !== 'object') return false;
-  if (err.structuredPayload) return false;
   if (isAbortLikeError(err)) return false;
+  if (isTransientHttpStatus(httpStatusFromError(err))) return true;
+  if (err.structuredPayload) return false;
   const code = fetchCauseCode(err).toUpperCase();
   if (['ECONNREFUSED', 'ECONNRESET', 'EHOSTUNREACH', 'ENETUNREACH', 'ETIMEDOUT'].includes(code)) {
     return true;
@@ -164,12 +182,20 @@ export async function postJson(url, body, timeoutSec = 8, opts = {}) {
           try {
             data = text ? JSON.parse(text) : {};
           } catch {
+            if (isTransientHttpStatus(r.status)) {
+              const err = new Error(`HTTP ${r.status} ${targetUrl}: ${text.slice(0, 200)}`);
+              err.retryableHttpStatus = r.status;
+              throw err;
+            }
             throw new Error(`Invalid JSON from ${targetUrl}: ${text.slice(0, 200)}`);
           }
           if (!r.ok) {
             const err = new Error(`HTTP ${r.status} ${targetUrl}: ${JSON.stringify(data).slice(0, 500)}`);
-            if (data && typeof data === 'object') {
+            if (data && typeof data === 'object' && data.error_code) {
               err.structuredPayload = data;
+            }
+            if (isTransientHttpStatus(r.status)) {
+              err.retryableHttpStatus = r.status;
             }
             throw err;
           }

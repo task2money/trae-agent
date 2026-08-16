@@ -40,7 +40,8 @@ export function parseTenantWorkspaceTaskFromPath(pathname) {
 }
 
 /**
- * 任务云 inbound 前缀。有 commentId 时带位置段 `/comment/{cid}/`（skill 推荐值）。
+ * 任务云 inbound 前缀。必须带 commentId：`/comment/{cid}/cloud`。
+ * 无有效 cid 时返回空字符串（禁止回退 `…/task/{id}/cloud`）。
  * @param {string} origin
  * @param {string} tenant
  * @param {string} workspace
@@ -49,12 +50,12 @@ export function parseTenantWorkspaceTaskFromPath(pathname) {
  * @returns {string}
  */
 export function buildTaskCloudPrefix(origin, tenant, workspace, task, comment) {
-  const base = `${String(origin || '').replace(/\/$/, '')}/api/tenant/${tenant}/workspace/${workspace}/task/${task}`;
   const cid = String(comment || '').trim();
-  if (cid && cid !== '-') {
-    return `${base}/comment/${cid}/cloud`;
+  if (!cid || cid === '-') {
+    return '';
   }
-  return `${base}/cloud`;
+  const base = `${String(origin || '').replace(/\/$/, '')}/api/tenant/${tenant}/workspace/${workspace}/task/${task}`;
+  return `${base}/comment/${cid}/cloud`;
 }
 
 /**

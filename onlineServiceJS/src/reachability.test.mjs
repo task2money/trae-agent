@@ -189,7 +189,7 @@ test('registerReachabilityAfterBootstrap：POST body 含 comment_id/container_na
     delete process.env.TASK_API_ENDPOINT;
     delete process.env.TRAE_SKIP_REACHABILITY_REGISTER;
     delete process.env.TRAE_SAAS_COLOCATED;
-    process.env.TaskApiEndPoint = `http://127.0.0.1:${port}/api/tenant/ta/workspace/ws1/task/td1/cloud`;
+    process.env.TaskApiEndPoint = `http://127.0.0.1:${port}/api/tenant/ta/workspace/ws1/task/td1/comment/cmt-a/cloud`;
     process.env.BusinessApiEndPoint = 'http://203.0.113.8:8765/api';
     process.env.ACCESS_TOKEN = 'reach-scope-token';
     process.env.COMMENT_ID = ' cmt_9 ';

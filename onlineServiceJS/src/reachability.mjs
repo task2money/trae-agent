@@ -6,6 +6,7 @@ import {
   appendOutboundReqLog,
 } from './outboundReqLog.mjs';
 import { postJson, rewriteDockerInternal, taskApiPrefix } from './saasTaskCloud.mjs';
+import { isTransientHttpStatus } from './saasPostJson.mjs';
 import { saasInboundScopeFields } from './saasInboundScope.mjs';
 
 /** IPv6 等非 IPv4 文本在 URL authority 中需方括号 */
@@ -272,12 +273,13 @@ export async function registerReachabilityAfterBootstrap(ctx) {
       break;
     } catch (e) {
       lastErr = e;
-      const status = Number(e?.structuredPayload?.status || e?.status || 0);
+      const status = Number(e?.retryableHttpStatus || e?.structuredPayload?.status || e?.status || 0);
       const code = String(e?.structuredPayload?.error_code || e?.structuredPayload?.detail || '');
+      const msg = String(e?.message || '');
       const retryable =
-        status === 503 ||
+        isTransientHttpStatus(status) ||
         code.includes('RELAY_DOWNSTREAM_BUSY') ||
-        String(e?.message || '').includes('HTTP 503');
+        /HTTP\s+(404|408|425|429|502|503|504)\b/.test(msg);
       if (!retryable || attempt === retryDelaysMs.length - 1) {
         throw e;
       }

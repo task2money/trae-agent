@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 
 import {
   buildScopedUiPath,
+  buildTaskCloudPrefix,
   resolveUiScopeFromEnv,
   extractAccessTokenFromUiPathname,
   parseTenantWorkspaceTaskFromPath,
@@ -123,4 +124,13 @@ test('parseTenantWorkspaceTaskFromPath: TaskApiEndPoint 含 comment 段', () => 
     ),
     { tenant: 't1', workspace: 'w1', task: 'task1', comment: 'cmt_1' },
   );
+});
+
+test('buildTaskCloudPrefix: 必须含 comment，禁止旧 /cloud', () => {
+  assert.equal(
+    buildTaskCloudPrefix('https://api.example.com', 't1', 'w1', 'task1', 'cmt_1'),
+    'https://api.example.com/api/tenant/t1/workspace/w1/task/task1/comment/cmt_1/cloud',
+  );
+  assert.equal(buildTaskCloudPrefix('https://api.example.com', 't1', 'w1', 'task1', ''), '');
+  assert.equal(buildTaskCloudPrefix('https://api.example.com', 't1', 'w1', 'task1', '-'), '');
 });

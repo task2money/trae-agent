@@ -29,6 +29,7 @@ const KEYS = [
   'tenantId',
   'workspaceId',
   'taskId',
+  'COMMENT_ID',
   'ACCESS_TOKEN',
   'TRAE_SKIP_SAAS_LAYER_GRAPH_PUSH',
   'TRAE_SAAS_LAYER_GRAPH_PUSH_INTERVAL_SEC',
@@ -61,7 +62,7 @@ test('publishLayerGraphSnapshotToSaas：POST layer-graph-push 且 body 含 layer
     delete process.env.tenantId;
     delete process.env.workspaceId;
     delete process.env.taskId;
-    process.env.TaskApiEndPoint = `http://127.0.0.1:${port}/api/tenant/ta/workspace/ws1/task/td1/cloud`;
+    process.env.TaskApiEndPoint = `http://127.0.0.1:${port}/api/tenant/ta/workspace/ws1/task/td1/comment/cmt-a/cloud`;
     process.env.ACCESS_TOKEN = 'lg-test-token';
     const ok = await publishLayerGraphSnapshotToSaas({
       layers: [{ layer_id: 'L1' }],
@@ -105,7 +106,7 @@ test('publishLayerGraphSnapshotToSaas：COMMENT_ID 写入 layer-graph-push body'
     delete process.env.tenantId;
     delete process.env.workspaceId;
     delete process.env.taskId;
-    process.env.TaskApiEndPoint = `http://127.0.0.1:${port}/api/tenant/ta/workspace/ws1/task/td1/cloud`;
+    process.env.TaskApiEndPoint = `http://127.0.0.1:${port}/api/tenant/ta/workspace/ws1/task/td1/comment/cmt-a/cloud`;
     process.env.ACCESS_TOKEN = 'lg-cmt-token';
     process.env.COMMENT_ID = 'cmt-a';
     process.env.CONTAINER_NAME = 'task_td1_cmt-a';
@@ -139,7 +140,7 @@ test('startSaasLayerGraphPushLoop：按间隔调用 getSnapshot 并推送', asyn
     delete process.env.TRAE_SKIP_SAAS_LAYER_GRAPH_PUSH;
     process.env.TRAE_SAAS_LAYER_GRAPH_PUSH_INITIAL_DELAY_SEC = '0';
     process.env.TRAE_SAAS_LAYER_GRAPH_PUSH_INTERVAL_SEC = '10';
-    process.env.TaskApiEndPoint = `http://127.0.0.1:${port}/api/tenant/ta/workspace/ws1/task/td1/cloud`;
+    process.env.TaskApiEndPoint = `http://127.0.0.1:${port}/api/tenant/ta/workspace/ws1/task/td1/comment/cmt-a/cloud`;
     process.env.ACCESS_TOKEN = 'lg-loop-token';
     let snapCalls = 0;
     stop = startSaasLayerGraphPushLoop(() => {
