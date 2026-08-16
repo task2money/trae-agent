@@ -259,7 +259,8 @@ export async function registerReachabilityAfterBootstrap(ctx) {
   if (vscodeUrl) body.container_vscode_url = vscodeUrl;
 
   const registerUrl = `${prefix.replace(/\/$/, '')}/server-container-token/register-reachability/`;
-  const retryDelaysMs = [0, 200, 500, 1000];
+  // 覆盖完整 runAll/SaaS 进程重启窗口（~30s）；首跳立即，后续退避累计约 31.7s（OPT-20260816-051）。
+  const retryDelaysMs = [0, 200, 500, 1000, 2000, 4000, 8000, 16000];
   let lastErr;
   for (let attempt = 0; attempt < retryDelaysMs.length; attempt += 1) {
     if (retryDelaysMs[attempt] > 0) {

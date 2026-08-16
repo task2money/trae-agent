@@ -107,13 +107,14 @@ function isRetryableLoopbackFetchError(err) {
 }
 
 /**
- * TaskApi 瞬时断连重试次数（含首次）。默认 5：覆盖 runAll 重启/端口短暂不可达窗口。
+ * TaskApi 瞬时断连重试次数（含首次）。默认 15：配合 400ms 线性退避约覆盖 30–40s，
+ * 足够跑完整 runAll/SaaS 进程重启窗口（OPT-20260816-051）。
  * 环境变量 `TASK_API_POST_JSON_TRANSIENT_RETRIES`。
  */
 export function postJsonTransientRetryConfigFromEnv() {
-  const retriesRaw = parseInt(String(process.env.TASK_API_POST_JSON_TRANSIENT_RETRIES || '5'), 10);
+  const retriesRaw = parseInt(String(process.env.TASK_API_POST_JSON_TRANSIENT_RETRIES || '15'), 10);
   const backoffRaw = parseInt(String(process.env.TASK_API_POST_JSON_TRANSIENT_BACKOFF_MS || '400'), 10);
-  const maxAttempts = Number.isFinite(retriesRaw) ? Math.max(1, Math.min(20, retriesRaw)) : 5;
+  const maxAttempts = Number.isFinite(retriesRaw) ? Math.max(1, Math.min(20, retriesRaw)) : 15;
   const backoffMs = Number.isFinite(backoffRaw) ? Math.max(50, Math.min(10000, backoffRaw)) : 400;
   return { maxAttempts, backoffMs };
 }
@@ -123,13 +124,44 @@ function sleepMs(ms) {
 }
 
 /**
+ * 默认 401 刷新钩子：走已有 refresh-access（`bootstrapTokenExchange.runRefreshAccessOnly`），
+ * 成功后已更新 process.env.ACCESS_TOKEN，返回新 access_token；失败返回 null（不盲重试）。
+ * 惰性 import 避免 saasPostJson ↔ saasTaskCloud/bootstrapTokenExchange 的循环依赖。
+ * @returns {Promise<string|null>}
+ */
+async function default401RefreshToken() {
+  try {
+    const { readPersistedTokenStore } = await import('./bootstrapTokenStore.mjs');
+    const { runRefreshAccessOnly } = await import('./bootstrapTokenExchange.mjs');
+    const { taskApiPrefix } = await import('./saasTaskCloud.mjs');
+    const store = readPersistedTokenStore() || {};
+    const refreshToken = String(store.refreshToken || '').trim();
+    if (!refreshToken) return null;
+    let prefix;
+    try {
+      prefix = taskApiPrefix();
+    } catch {
+      return null;
+    }
+    if (!prefix) return null;
+    const result = await runRefreshAccessOnly(prefix, refreshToken, 15);
+    return result?.accessToken || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * @param {string} url
  * @param {object} body
  * @param {number} [timeoutSec]
- * @param {{ reqLogFile?: string, traceId?: string, spanId?: string }} [opts]
+ * @param {{ reqLogFile?: string, traceId?: string, spanId?: string, on401Refresh?: false|(() => Promise<string|null>) }} [opts]
  *   — `reqLogFile: 'heartbeat.log'` 时写入 reqLogs/heartbeat.log
  *   — `traceId` 转发请求的 X-Trace-Id；省略则用启动时 TRACE_ID env
  *   — `spanId` 当前请求的 span，作为下游 X-Parent-Span-Id
+ *   — `on401Refresh` 收到 HTTP 401 时调用的 refresh-access 钩子，返回新 access_token（或 null）。
+ *     省略时对含 `access_token` 的请求使用默认 refresh-access（惰性加载，避免循环依赖）；
+ *     显式传 `false` 表示关闭（401 仍按永久错误处理，不盲重试）。
  */
 export async function postJson(url, body, timeoutSec = 8, opts = {}) {
   const payload = withSaasInboundScope(body);
@@ -145,6 +177,18 @@ export async function postJson(url, body, timeoutSec = 8, opts = {}) {
   if (fallbackUrl && fallbackUrl !== url) hostAttempts.push(fallbackUrl);
   const { maxAttempts, backoffMs } = postJsonTransientRetryConfigFromEnv();
   let lastErr = null;
+
+  const optsObj = opts && typeof opts === 'object' ? opts : {};
+  const on401Refresh =
+    optsObj.on401Refresh === false
+      ? null
+      : typeof optsObj.on401Refresh === 'function'
+        ? optsObj.on401Refresh
+        : default401RefreshToken;
+  // 401 刷新只对 access-token 认证的请求生效；refresh-access 自身（body 无 access_token）不触发，避免递归。
+  const hasAccessTokenPayload =
+    payload && typeof payload === 'object' && Object.prototype.hasOwnProperty.call(payload, 'access_token');
+  let refreshed401 = false;
 
   for (let round = 1; round <= maxAttempts; round += 1) {
     // 每轮独立超时，避免瞬时重试吃掉整段 timeout
@@ -173,6 +217,27 @@ export async function postJson(url, body, timeoutSec = 8, opts = {}) {
           if (isDebugAgentEnabled()) {
             appendOutboundReqLog(
               `DEBUG_AGENT outbound response method=POST url=${targetUrl} status=${r.status} headers=${debugAgentStringify(Object.fromEntries(r.headers.entries()))} body=${text}`,
+              logOpts,
+            );
+          }
+          if (r.status === 401 && on401Refresh && hasAccessTokenPayload && !refreshed401) {
+            let newAccess = null;
+            try {
+              newAccess = (await on401Refresh()) || null;
+            } catch {
+              newAccess = null;
+            }
+            refreshed401 = true;
+            if (newAccess) {
+              payload.access_token = String(newAccess);
+              appendOutboundReqLog(
+                `postJson POST ${safeTargetUrl} -> HTTP 401 refresh-access OK retry with new token`,
+                logOpts,
+              );
+              continue;
+            }
+            appendOutboundReqLog(
+              `postJson POST ${safeTargetUrl} -> HTTP 401 refresh unavailable (no blind retry)`,
               logOpts,
             );
           }
