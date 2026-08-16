@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 
-import { isTruthyEnvFlag, redactEnvSnapshot } from './envLogRedact.mjs';
+import { isEnvRedactDisabled, redactEnvSnapshot } from './envLogRedact.mjs';
 import { logsDir } from './paths.mjs';
 
 export function parseInitLogEnvKeysPolicy(raw) {
@@ -16,7 +16,7 @@ export function parseInitLogEnvKeysPolicy(raw) {
 }
 
 /**
- * init.log 脱敏：INIT_LOG_REDACT 或全局 ENV_LOG_REDACT。
+ * init.log 脱敏：默认开启；INIT_LOG_REDACT 或全局 ENV_LOG_REDACT 显式 `0/false/no/off` 才关闭。
  * @param {unknown} [rawInit]
  * @param {unknown} [rawGlobal]
  */
@@ -24,7 +24,7 @@ export function isInitLogRedactEnabled(
   rawInit = process.env.INIT_LOG_REDACT,
   rawGlobal = process.env.ENV_LOG_REDACT
 ) {
-  return isTruthyEnvFlag(rawInit) || isTruthyEnvFlag(rawGlobal);
+  return !isEnvRedactDisabled(rawGlobal) && !isEnvRedactDisabled(rawInit);
 }
 
 export function buildInitLogEnvSnapshot(envMapping, rawPolicy, redact = false) {

@@ -63,13 +63,13 @@ Dockerfile 基于 **ubuntu:24.04**（可通过构建参数 `BASE_IMAGE` / 环境
 
 `go_relayToTrae` 会转发子进程 stdout 到 `/v1/status` 的 `logs`（及 SSE status-push），因此任务详情「启动日志」面板可直接看到上述行。写日志失败不阻断 YAML 落盘。启动时进程环境快照仍见 **`logs/init.log`**（可选白名单 `INIT_LOG_ENV_KEYS`）；注意 init.log 在 listen 时落盘，**早于** feature-params 拉取，故 SCOPE 等键以 `feature-params-env pulled` 行为准。
 
-**可选脱敏**（默认关闭，与历史原值落盘一致）：
+**脱敏**（**默认开启**，生产必须脱敏；仅显式 `0/false/no/off` 关闭）：
 
 | 变量 | 作用 |
 |------|------|
-| `FEATURE_PARAMS_ENV_LOG_REDACT=1` | 仅脱敏 `feature-params-env.log` / 对应 stdout |
-| `INIT_LOG_REDACT=1` | 仅脱敏 `init.log` |
-| `ENV_LOG_REDACT=1` | 同时开启上述两类脱敏 |
+| `FEATURE_PARAMS_ENV_LOG_REDACT=0` | 仅关闭 `feature-params-env.log` / 对应 stdout 的脱敏 |
+| `INIT_LOG_REDACT=0` | 仅关闭 `init.log` 的脱敏 |
+| `ENV_LOG_REDACT=0` | 同时关闭上述两类脱敏 |
 
 开启后，`ACCESS_TOKEN` / `*_TOKEN` / `api_key` / `*_SECRET` 等键值记为 `(redacted len=N)`；`TASK_LLM_PROVIDERS_JSON` 内嵌 `api_key` 亦会打码。JSON 记录含 `"redact": true|false`。
 

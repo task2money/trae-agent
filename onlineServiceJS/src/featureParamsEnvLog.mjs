@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 
-import { isTruthyEnvFlag, redactEnvSnapshot } from './envLogRedact.mjs';
+import { isEnvRedactDisabled, redactEnvSnapshot } from './envLogRedact.mjs';
 import { logsDir } from './paths.mjs';
 
 /**
@@ -21,6 +21,8 @@ export function buildFeatureParamsEnvSnapshot(envMapping) {
 }
 
 /**
+ * feature-params-env.log 脱敏：默认开启；FEATURE_PARAMS_ENV_LOG_REDACT 或全局 ENV_LOG_REDACT
+ * 显式 `0/false/no/off` 才关闭。
  * @param {unknown} rawPolicy
  * @returns {boolean}
  */
@@ -28,7 +30,7 @@ export function isFeatureParamsEnvLogRedactEnabled(
   rawPolicy = process.env.FEATURE_PARAMS_ENV_LOG_REDACT,
   rawGlobal = process.env.ENV_LOG_REDACT
 ) {
-  return isTruthyEnvFlag(rawPolicy) || isTruthyEnvFlag(rawGlobal);
+  return !isEnvRedactDisabled(rawGlobal) && !isEnvRedactDisabled(rawPolicy);
 }
 
 /**
@@ -48,7 +50,7 @@ export function buildFeatureParamsEnvPulledSummary(envSnapshot) {
  * }} args
  * @returns {string}
  */
-export function buildFeatureParamsEnvLogRecord({ envMapping, now, redact }) {
+export function buildFeatureParamsEnvLogRecord({ envMapping, now, redact = isFeatureParamsEnvLogRedactEnabled() }) {
   const ts = (now instanceof Date ? now : new Date(now ?? Date.now())).toISOString();
   const raw = buildFeatureParamsEnvSnapshot(envMapping);
   const env = redactEnvSnapshot(raw, Boolean(redact));

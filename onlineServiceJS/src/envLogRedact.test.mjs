@@ -7,7 +7,19 @@ import {
   redactSecretValue,
   redactEnvSnapshot,
   redactNestedValue,
+  isEnvRedactDisabled,
 } from './envLogRedact.mjs';
+
+test('isEnvRedactDisabled 仅显式 0/false/no/off 判定关闭，未设置/真值为开启', () => {
+  assert.equal(isEnvRedactDisabled('0'), true);
+  assert.equal(isEnvRedactDisabled('false'), true);
+  assert.equal(isEnvRedactDisabled('no'), true);
+  assert.equal(isEnvRedactDisabled('OFF'), true);
+  assert.equal(isEnvRedactDisabled(undefined), false);
+  assert.equal(isEnvRedactDisabled(''), false);
+  assert.equal(isEnvRedactDisabled('1'), false);
+  assert.equal(isEnvRedactDisabled('true'), false);
+});
 
 test('isSensitiveEnvKey 识别 token/api_key/secret 类键名', () => {
   assert.equal(isSensitiveEnvKey('TASK_LLM_PROXY_TOKEN'), true);

@@ -9,6 +9,7 @@ import {
   buildInitLogEnvSnapshot,
   buildInitLogRecord,
   appendInitLogBestEffort,
+  isInitLogRedactEnabled,
 } from './initLog.mjs';
 
 test('默认全量采集环境变量：空键忽略，值转字符串', () => {
@@ -67,6 +68,7 @@ test('buildInitLogRecord 生成 JSON 行格式，包含 ts/event/pid/port/env', 
     envMapping: { A: 1 },
     now,
     rawPolicy: '',
+    redact: false,
   });
 
   assert.ok(typeof line === 'string');
@@ -83,6 +85,53 @@ test('buildInitLogRecord 生成 JSON 行格式，包含 ts/event/pid/port/env', 
   });
 });
 
+test('buildInitLogRecord 默认脱敏：未传 redact 时对敏感键打码', () => {
+  const prevInit = process.env.INIT_LOG_REDACT;
+  const prevGlobal = process.env.ENV_LOG_REDACT;
+  delete process.env.INIT_LOG_REDACT;
+  delete process.env.ENV_LOG_REDACT;
+  try {
+    const now = new Date('2026-05-25T00:00:00.000Z');
+    const payload = JSON.parse(
+      buildInitLogRecord({
+        pid: 321,
+        port: 8787,
+        envMapping: { A: 1, ACCESS_TOKEN: 'tok_abc' },
+        now,
+        rawPolicy: '',
+      })
+    );
+    assert.equal(payload.redact, true);
+    assert.equal(payload.env.ACCESS_TOKEN, '(redacted len=7)');
+    assert.equal(payload.env.A, '1');
+  } finally {
+    if (prevInit === undefined) delete process.env.INIT_LOG_REDACT;
+    else process.env.INIT_LOG_REDACT = prevInit;
+    if (prevGlobal === undefined) delete process.env.ENV_LOG_REDACT;
+    else process.env.ENV_LOG_REDACT = prevGlobal;
+  }
+});
+
+test('isInitLogRedactEnabled 默认开启，显式 0/false/no/off 关闭', () => {
+  const prevInit = process.env.INIT_LOG_REDACT;
+  const prevGlobal = process.env.ENV_LOG_REDACT;
+  delete process.env.INIT_LOG_REDACT;
+  delete process.env.ENV_LOG_REDACT;
+  try {
+    assert.equal(isInitLogRedactEnabled(), true);
+  } finally {
+    if (prevInit === undefined) delete process.env.INIT_LOG_REDACT;
+    else process.env.INIT_LOG_REDACT = prevInit;
+    if (prevGlobal === undefined) delete process.env.ENV_LOG_REDACT;
+    else process.env.ENV_LOG_REDACT = prevGlobal;
+  }
+  assert.equal(isInitLogRedactEnabled('1', ''), true);
+  assert.equal(isInitLogRedactEnabled('', 'true'), true);
+  assert.equal(isInitLogRedactEnabled('0', ''), false);
+  assert.equal(isInitLogRedactEnabled('', 'off'), false);
+  assert.equal(isInitLogRedactEnabled('no', '0'), false);
+});
+
 test('appendInitLogBestEffort 追加写入 ONLINE_PROJECT_STATE_ROOT/logs/init.log', () => {
   const prevRoot = process.env.ONLINE_PROJECT_STATE_ROOT;
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'online-service-initlog-'));
@@ -95,6 +144,7 @@ test('appendInitLogBestEffort 追加写入 ONLINE_PROJECT_STATE_ROOT/logs/init.l
       envMapping: { K: 'v' },
       now: new Date('2026-05-25T00:00:01.000Z'),
       rawPolicy: '',
+      redact: false,
     });
     appendInitLogBestEffort({
       pid: 7,
@@ -102,6 +152,7 @@ test('appendInitLogBestEffort 追加写入 ONLINE_PROJECT_STATE_ROOT/logs/init.l
       envMapping: { K: 'v2' },
       now: new Date('2026-05-25T00:00:02.000Z'),
       rawPolicy: '',
+      redact: false,
     });
 
     const filePath = path.join(tempRoot, 'logs', 'init.log');

@@ -1,6 +1,7 @@
 /**
  * 环境变量日志脱敏：用于 init.log / feature-params-env.log。
- * 默认关闭（与历史「原值落盘」一致）；开启后对 token/api_key 等敏感键与嵌套 JSON 字段打码。
+ * 默认开启（生产必须脱敏）；仅显式 `0/false/no/off` 才关闭。
+ * 开启后对 token/api_key 等敏感键与嵌套 JSON 字段打码。
  */
 
 const SENSITIVE_KEY_RE =
@@ -12,6 +13,15 @@ const SENSITIVE_KEY_RE =
  */
 export function isTruthyEnvFlag(raw) {
   return ['1', 'true', 'yes', 'on'].includes(String(raw ?? '').trim().toLowerCase());
+}
+
+/**
+ * 仅显式 `0/false/no/off` 判定为「关闭脱敏」；未设置与任意真值均为开启。
+ * @param {unknown} raw
+ * @returns {boolean}
+ */
+export function isEnvRedactDisabled(raw) {
+  return ['0', 'false', 'no', 'off'].includes(String(raw ?? '').trim().toLowerCase());
 }
 
 /**
