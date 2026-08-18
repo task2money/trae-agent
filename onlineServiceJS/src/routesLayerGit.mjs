@@ -10,6 +10,7 @@ import {
   clickedPathIsGitRepoRoot,
   markOriginRemoteTrackingToHead,
   rememberLayerGitPushCompareBranch,
+  rememberLayerPrHtmlUrl,
   layerGitRemoteSnapshot,
 } from './layerFs.mjs';
 import { suggestStagedCommitMessage } from './stagedCommitSuggest.mjs';
@@ -27,6 +28,24 @@ import {
   safeRepoRelativePathForGitAdd,
 } from './layerGitRouteHelpers.mjs';
 
+
+/**
+ * 网关兜底：把 SaaS 侧拿到的 PR/合并请求 URL 持久化到层文件系统（OPT-20260817-042）。
+ * 容器 oauth-access-push 成功路径已自行 remember；本端点用于「PR 由 SaaS follow-up 创建、
+ * 容器侧未落盘」的兜底，幂等（相同 URL 覆盖写）。
+ * @param {{ layerId?: string, htmlUrl?: string }} opts
+ * @returns {{ httpStatus: number, payload: object }}
+ */
+export function runRememberPrHtmlUrl(opts = {}) {
+  const layerId = String(opts?.layerId || '').trim();
+  const htmlUrl = String(opts?.htmlUrl || '').trim();
+  if (!layerId || !htmlUrl) {
+    return { httpStatus: 400, payload: { ok: false, detail: 'layer_id and html_url required' } };
+  }
+  const ok = rememberLayerPrHtmlUrl(layerId, htmlUrl);
+  appendGitPushReqLog(`remember-pr-html-url layer_id=${layerId} ok=${ok}`);
+  return { httpStatus: 200, payload: { ok, remembered: ok } };
+}
 
 export function registerLayerGitRoutes(api) {
   api.get('/layers/:layer_id/git/commit/latest-log', async (req, res) => {
@@ -357,6 +376,18 @@ export function registerLayerGitRoutes(api) {
       );
       res.status(400).json({ detail: String(e.message || e) });
     }
+  });
+
+  /**
+   * 兜底持久化 PR/合并请求 URL（OPT-20260817-042）：网关在 oauth-access-push 响应拿到
+   * github_pull_request.html_url 后调用本端点，保证 SaaS follow-up 场景刷新后层图仍有 PR 锚点。
+   */
+  api.post('/layers/:layer_id/git/remember-pr-html-url', async (req, res) => {
+    const { httpStatus, payload } = runRememberPrHtmlUrl({
+      layerId: req.params.layer_id,
+      htmlUrl: req.body?.html_url,
+    });
+    res.status(httpStatus).json(payload);
   });
 
   /**
