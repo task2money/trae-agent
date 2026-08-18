@@ -24,11 +24,14 @@ import { mirrorLayerGraphToTaskCloudSSE } from './jobsRuntimeSnapshot.mjs';
  * @param {{
  *   drainQueuedJobsForLayer: (layerId: string, jobId: string) => void | Promise<void>,
  *   triggerAutoRunDeliveryForJobAndMirror: (rec: object) => Promise<unknown>,
+ *   spawn?: (cmd: string, args: string[], opts: object) => unknown,
  * }} deps
  */
 export function runJobAsync(rec, workDir, deps) {
   const drainQueuedJobsForLayer = deps.drainQueuedJobsForLayer;
   const triggerAutoRunDeliveryForJobAndMirror = deps.triggerAutoRunDeliveryForJobAndMirror;
+  // spawn 可注入（OPT-20260817-040）：集成级契约测用 fake proc 走 close 路径。
+  const spawnFn = deps.spawn || spawn;
   const running = getRunningMap();
   resetExecStream('job', rec.id);
   const env = { ...process.env, PYTHONUNBUFFERED: '1' };
@@ -54,7 +57,7 @@ export function runJobAsync(rec, workDir, deps) {
 
   let proc;
   if (rec.command_kind === 'shell') {
-    proc = spawn('bash', ['-lc', rec.command], { cwd: workDir, env });
+    proc = spawnFn('bash', ['-lc', rec.command], { cwd: workDir, env });
   } else {
     const trae = buildTraeCmd(workDir, commandForTrae, {
       trajectoryFile,
@@ -62,9 +65,9 @@ export function runJobAsync(rec, workDir, deps) {
       provider: normalizedCommandEnv?.TRAE_MODEL_PROVIDER,
     });
     if (trae) {
-      proc = spawn(trae.cmd, trae.args, { cwd: workDir, env, shell: trae.shell || false });
+      proc = spawnFn(trae.cmd, trae.args, { cwd: workDir, env, shell: trae.shell || false });
     } else {
-      proc = spawn(
+      proc = spawnFn(
         'bash',
         [
           '-lc',
