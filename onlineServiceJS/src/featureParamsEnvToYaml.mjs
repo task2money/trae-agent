@@ -26,17 +26,27 @@ function normalizeProviderId(raw) {
 }
 
 /**
- * DeepSeek OpenAI client hits {base}/chat/completions; .../anthropic only serves
- * Anthropic Messages API → permanent 404 if mixed (TraceId 9257e326bcadc9405df4b150).
+ * Repair accidentally concatenated absolute URLs (default fill + paste).
+ * Operator-specific paths are not rewritten.
  */
-export function normalizeDeepSeekBaseUrl(provider, baseUrl) {
-  const providerId = normalizeProviderId(provider);
-  let url = String(baseUrl || '').trim().replace(/\/+$/, '');
-  if (providerId !== 'deepseek' || !url) return url;
-  if (url.toLowerCase().includes('/anthropic')) {
-    return 'https://api.deepseek.com/v1';
+function repairConcatenatedAbsoluteUrl(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return '';
+  const re = /https?:\/\//gi;
+  const starts = [];
+  let match = re.exec(s);
+  while (match) {
+    starts.push(match.index);
+    match = re.exec(s);
   }
-  return url;
+  if (starts.length <= 1) return s.replace(/\/+$/, '');
+  if (s.slice(0, starts[1]).includes('?')) return s.replace(/\/+$/, '');
+  return s.slice(starts[starts.length - 1]).replace(/\/+$/, '');
+}
+
+export function normalizeDeepSeekBaseUrl(provider, baseUrl) {
+  void provider;
+  return repairConcatenatedAbsoluteUrl(baseUrl);
 }
 
 function envTruthy(raw) {

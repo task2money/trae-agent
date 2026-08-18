@@ -60,18 +60,29 @@ test('featureParamsEnvToYaml lowercases provider identifiers', () => {
   assert.doesNotMatch(yaml, /deepSeek/);
 });
 
-test('normalizeDeepSeekBaseUrl rewrites anthropic-compatible path', () => {
+test('normalizeDeepSeekBaseUrl keeps operator-typed paths and repairs concat only', () => {
   assert.equal(
     normalizeDeepSeekBaseUrl('deepseek', 'https://api.deepseek.com/anthropic'),
-    'https://api.deepseek.com/v1',
+    'https://api.deepseek.com/anthropic',
   );
   assert.equal(
     normalizeDeepSeekBaseUrl('anthropic', 'https://api.deepseek.com/anthropic'),
     'https://api.deepseek.com/anthropic',
   );
+  assert.equal(
+    normalizeDeepSeekBaseUrl('deepseek', 'https://gateway.example.com/anthropic'),
+    'https://gateway.example.com/anthropic',
+  );
+  assert.equal(
+    normalizeDeepSeekBaseUrl(
+      'deepseek',
+      'https://api.deepseek.com/v1https://api.deepseek.com',
+    ),
+    'https://api.deepseek.com',
+  );
 });
 
-test('featureParamsEnvToYaml coerces deepseek anthropic base_url', () => {
+test('featureParamsEnvToYaml keeps deepseek anthropic base_url', () => {
   const yaml = featureParamsEnvToYaml({
     TASK_LLM_PROVIDERS_JSON:
       '[{"provider":"deepseek","api_key":"sk","base_url":"https://api.deepseek.com/anthropic","supported_models":["deepseek-v4-flash"]}]',
@@ -81,8 +92,7 @@ test('featureParamsEnvToYaml coerces deepseek anthropic base_url', () => {
     TASK_SUMMARY_MODEL: 'deepseek-v4-flash',
     TASK_SUMMARY_MODEL_PROVIDER: 'deepseek',
   });
-  assert.match(yaml, /base_url: https:\/\/api\.deepseek\.com\/v1/);
-  assert.doesNotMatch(yaml, /\/anthropic/);
+  assert.match(yaml, /base_url: https:\/\/api\.deepseek\.com\/anthropic/);
 });
 
 test('featureParamsEnvToYaml enables playwright mcp when opted in', () => {
