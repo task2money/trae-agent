@@ -120,6 +120,8 @@ mcp_servers:
       - "@playwright/mcp@0.0.27"
 ```
 
+SaaS 容器由 `featureParamsEnvToYaml` 生成配置时**默认不启用** playwright MCP（ECS 常无法直连 `registry.npmjs.org`）。需要时设置环境变量 `TASK_ENABLE_PLAYWRIGHT_MCP=1`。
+
 **Configuration Priority:** Command-line arguments > Configuration file > Environment variables > Default values
 
 **Legacy JSON Configuration:** If using the older JSON format, see [docs/legacy_config.md](docs/legacy_config.md). We recommend migrating to YAML.

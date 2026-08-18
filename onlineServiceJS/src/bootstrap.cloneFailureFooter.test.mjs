@@ -3,8 +3,9 @@ import test from 'node:test';
 
 import {
   formatBootstrapCloneFailureFooter,
+  formatBootstrapCloneRepoFailureMessage,
   resolveBootstrapCloneFailurePolicy,
-} from './bootstrap.mjs';
+} from './bootstrapCloneFailurePolicy.mjs';
 
 test('formatBootstrapCloneFailureFooter: empty list still has 已结束（存在失败，引导继续）', () => {
   const out = formatBootstrapCloneFailureFooter([]);
@@ -59,6 +60,29 @@ test('resolveBootstrapCloneFailurePolicy: never aborts bootstrap on partial or t
   });
   assert.equal(allFailed.abort, false);
   assert.equal(allFailed.level, 'partial');
+  assert.match(allFailed.progressMessage, /均失败/);
+  assert.doesNotMatch(allFailed.progressMessage, /其余已就绪/);
+  assert.doesNotMatch(allFailed.progressMessage, /部分失败/);
+
+  const singleAllFailed = resolveBootstrapCloneFailurePolicy({
+    failedCount: 1,
+    totalCount: 1,
+    failedNames: 'ram-work',
+  });
+  assert.match(singleAllFailed.progressMessage, /ram-work/);
+  assert.doesNotMatch(singleAllFailed.progressMessage, /其余已就绪/);
+});
+
+test('formatBootstrapCloneRepoFailureMessage: puts git URL after repo name for cold-open retry', () => {
+  const out = formatBootstrapCloneRepoFailureMessage(
+    1,
+    1,
+    'ram-work',
+    'https://gitlab.example.com/g/ram-work.git',
+    'git exit 128: Cloning into \'/app/onlineProject_state/layers/x/ram-work\'',
+  );
+  assert.match(out, /^【项目克隆】\(1\/1\) 失败 ram-work https:\/\/gitlab\.example\.com\/g\/ram-work\.git:/);
+  assert.match(out, /git exit 128/);
 });
 
 test('formatBootstrapCloneFailureFooter: omits empty err paren', () => {

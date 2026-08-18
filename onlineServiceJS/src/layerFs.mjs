@@ -201,6 +201,8 @@ export {
   markOriginRemoteTrackingToHead,
   rememberLayerGitPushCompareBranch,
   readLayerGitPushCompareBranch,
+  rememberLayerPrHtmlUrl,
+  readLayerPrHtmlUrl,
   layerGitRemoteSnapshot,
 } from './layerFsGitRemote.mjs';
 

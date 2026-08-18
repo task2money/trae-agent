@@ -1,7 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { featureParamsEnvToYaml } from './featureParamsEnvToYaml.mjs';
+import {
+  featureParamsEnvToYaml,
+  normalizeDeepSeekBaseUrl,
+} from './featureParamsEnvToYaml.mjs';
 
 test('featureParamsEnvToYaml builds trae config from env', () => {
   const yaml = featureParamsEnvToYaml({
@@ -17,6 +20,8 @@ test('featureParamsEnvToYaml builds trae config from env', () => {
   assert.match(yaml, /model: gpt-4/);
   assert.match(yaml, /sk-test/);
   assert.match(yaml, /    openai:/);
+  assert.match(yaml, /allow_mcp_servers: \[\]/);
+  assert.doesNotMatch(yaml, /@playwright\/mcp/);
 });
 
 test('featureParamsEnvToYaml rejects invalid providers json', () => {
@@ -53,4 +58,39 @@ test('featureParamsEnvToYaml lowercases provider identifiers', () => {
   assert.match(yaml, /provider: deepseek/);
   assert.match(yaml, /model_provider: deepseek/);
   assert.doesNotMatch(yaml, /deepSeek/);
+});
+
+test('normalizeDeepSeekBaseUrl rewrites anthropic-compatible path', () => {
+  assert.equal(
+    normalizeDeepSeekBaseUrl('deepseek', 'https://api.deepseek.com/anthropic'),
+    'https://api.deepseek.com/v1',
+  );
+  assert.equal(
+    normalizeDeepSeekBaseUrl('anthropic', 'https://api.deepseek.com/anthropic'),
+    'https://api.deepseek.com/anthropic',
+  );
+});
+
+test('featureParamsEnvToYaml coerces deepseek anthropic base_url', () => {
+  const yaml = featureParamsEnvToYaml({
+    TASK_LLM_PROVIDERS_JSON:
+      '[{"provider":"deepseek","api_key":"sk","base_url":"https://api.deepseek.com/anthropic","supported_models":["deepseek-v4-flash"]}]',
+    TASK_AGENT_MODEL: 'deepseek-v4-flash',
+    TASK_AGENT_MODEL_PROVIDER: 'deepseek',
+    TASK_AGENT_MAX_STEPS: '200',
+    TASK_SUMMARY_MODEL: 'deepseek-v4-flash',
+    TASK_SUMMARY_MODEL_PROVIDER: 'deepseek',
+  });
+  assert.match(yaml, /base_url: https:\/\/api\.deepseek\.com\/v1/);
+  assert.doesNotMatch(yaml, /\/anthropic/);
+});
+
+test('featureParamsEnvToYaml enables playwright mcp when opted in', () => {
+  const yaml = featureParamsEnvToYaml({
+    TASK_LLM_PROVIDERS_JSON: '[]',
+    TASK_AGENT_MAX_STEPS: '200',
+    TASK_ENABLE_PLAYWRIGHT_MCP: '1',
+  });
+  assert.match(yaml, /allow_mcp_servers:\n    - playwright/);
+  assert.match(yaml, /@playwright\/mcp@0\.0\.27/);
 });

@@ -8,6 +8,7 @@ import {
   createMountedAgentChunkBuffer,
   failMountedAgentComment,
 } from './mountedAgentCommentStream.mjs';
+import { finalizeJobCloseSideEffects } from './jobsRuntimeCloseSideEffects.mjs';
 import { jobLogsTaeJsonDir, jobLogsTaeJsonPath, layerArtifactsDir } from './paths.mjs';
 import { broadcast } from './sseHub.mjs';
 import { resetExecStream, appendExecStream, completeExecStream } from './execStream.mjs';
@@ -149,38 +150,16 @@ export function runJobAsync(rec, workDir, deps) {
           /* ignore */
         }
       }
-      if (!mountedAgentId || wasInterrupted) return;
-      if (rec.status === 'completed') {
-        const text = String(rec.output || '').trim();
-        if (text) {
-          try {
-            await completeMountedAgentComment({
-              agentCommentId: mountedAgentId,
-              assistantResponse: text,
-            });
-          } catch {
-            /* soft-fail */
-          }
-        }
-      } else if (rec.status === 'failed') {
-        try {
-          await failMountedAgentComment({
-            agentCommentId: mountedAgentId,
-            detail: `job exit_code=${code}`,
-          });
-        } catch {
-          /* soft-fail */
-        }
-      }
-      if (rec.status === 'completed' && (rec.auto_run_first || rec.edit_run_delivery)) {
-        try {
-          await triggerAutoRunDeliveryForJobAndMirror(rec);
-        } catch (e) {
-          console.error(
-            `[jobsRuntime] AUTO_RUN_DELIVERY unexpected error: ${String(e?.message || e).slice(0, 400)}`,
-          );
-        }
-      }
+      // 交付不得依赖 mountedAgentId：普通 auto_run / edit_run 常无预挂载评论
+      await finalizeJobCloseSideEffects({
+        wasInterrupted,
+        mountedAgentId,
+        rec,
+        exitCode: code,
+        completeMountedAgentComment,
+        failMountedAgentComment,
+        triggerAutoRunDeliveryForJobAndMirror,
+      });
     })();
   });
   proc.on('error', (e) => {

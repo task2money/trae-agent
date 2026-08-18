@@ -97,6 +97,51 @@ function gitPushCompareBranchPath(layerId) {
   return path.join(layerPath(layerId), 'git_push_compare_branch');
 }
 
+function gitPrHtmlUrlPath(layerId) {
+  return path.join(layerPath(layerId), 'git_pr_html_url');
+}
+
+/**
+ * 推送并创建 PR/MR 成功后记下审查页 URL，供层图刷新后 zTree 附着可点击 PR 链接。
+ * @param {string} layerId
+ * @param {string} htmlUrl
+ * @returns {boolean}
+ */
+export function rememberLayerPrHtmlUrl(layerId, htmlUrl) {
+  const lid = String(layerId || '').trim();
+  const url = String(htmlUrl || '').trim();
+  if (!lid || !LAYER_ID_RE.test(lid) || !url) return false;
+  if (!/^https?:\/\//i.test(url)) return false;
+  const root = layerPath(lid);
+  if (!fs.existsSync(root)) return false;
+  fs.writeFileSync(gitPrHtmlUrlPath(lid), `${url}\n`, 'utf8');
+  return true;
+}
+
+/**
+ * @param {string} layerId
+ * @returns {string}
+ */
+export function readLayerPrHtmlUrl(layerId) {
+  const lid = String(layerId || '').trim();
+  if (!lid || !LAYER_ID_RE.test(lid)) return '';
+  const p = gitPrHtmlUrlPath(lid);
+  if (!fs.existsSync(p)) return '';
+  try {
+    const raw = String(fs.readFileSync(p, 'utf8').split('\n')[0] || '').trim();
+    return /^https?:\/\//i.test(raw) ? raw : '';
+  } catch {
+    return '';
+  }
+}
+
+/** @param {object} snap @param {string} layerId */
+function withRememberedPrHtmlUrl(snap, layerId) {
+  const pr = readLayerPrHtmlUrl(layerId);
+  if (!pr || !snap || typeof snap !== 'object') return snap;
+  return { ...snap, pr_html_url: pr };
+}
+
 /**
  * 推送成功后记下工作分支名，供 GET /api/layers 刷新时按「相对推送目标」算 ahead。
  * @param {string} layerId
@@ -328,10 +373,10 @@ export function layerGitRemoteSnapshot(layerId, opts = {}) {
   if (!roots.length) {
     const work = layerPrimaryGitWorkdir(lid);
     if (!work || !dirHasGit(work)) return empty;
-    return gitRemoteSnapshotForWorkdir(work, perOpts);
+    return withRememberedPrHtmlUrl(gitRemoteSnapshotForWorkdir(work, perOpts), lid);
   }
 
   const snaps = roots.map((r) => gitRemoteSnapshotForWorkdir(r.workdir, perOpts));
-  return aggregateGitRemoteSnapshots(snaps);
+  return withRememberedPrHtmlUrl(aggregateGitRemoteSnapshots(snaps), lid);
 }
 

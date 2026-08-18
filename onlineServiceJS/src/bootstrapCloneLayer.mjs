@@ -29,6 +29,7 @@ import {
   clearCloneLayerLog,
   finalizeCloneLayerLog,
   formatBootstrapCloneFailureFooter,
+  formatBootstrapCloneRepoFailureMessage,
   rebuildBootstrapParallelLogText,
   resolveBootstrapCloneFailurePolicy,
 } from './bootstrapCloneLog.mjs';
@@ -203,7 +204,7 @@ export async function cloneReposIntoSharedLayer(urlsOrJobs, credRoot, cloudPrefi
         cloudPrefix,
         accessToken,
         0,
-        `【项目克隆】(${idx + 1}/${n}) 失败 ${repoName}: ${msg.slice(0, 500)}`,
+        formatBootstrapCloneRepoFailureMessage(idx + 1, n, repoName, job.raw, msg),
         job.raw,
         { phase: 'bootstrap', index: idx + 1, total: n }
       );

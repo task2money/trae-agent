@@ -12,6 +12,7 @@ import {
   layerGitRemoteSnapshot,
   markOriginRemoteTrackingToHead,
   rememberLayerGitPushCompareBranch,
+  rememberLayerPrHtmlUrl,
 } from './layerFs.mjs';
 import { workdirNeedsPush } from './layerGitCommit.mjs';
 import { appendGitPushReqLog } from './outboundReqLog.mjs';
@@ -457,6 +458,12 @@ export async function runLayerGithubOauthAccessPush(opts) {
     };
   }
   appendGitPushReqLog(`oauth layer_id=${layerId} done ok repos=${repos.length}`);
+  const firstPrUrl = repos
+    .map((r) => (r?.pr && typeof r.pr.html_url === 'string' ? r.pr.html_url.trim() : ''))
+    .find((u) => u);
+  if (firstPrUrl) {
+    rememberLayerPrHtmlUrl(layerId, firstPrUrl);
+  }
   const gitRemote = layerGitRemoteSnapshot(layerId, { compareBranch: headName || targetBranch });
   return {
     httpStatus: 200,

@@ -8,6 +8,8 @@ const TASK_AGENT_MODEL_PROVIDER = 'TASK_AGENT_MODEL_PROVIDER';
 const TASK_AGENT_MAX_STEPS = 'TASK_AGENT_MAX_STEPS';
 const TASK_SUMMARY_MODEL = 'TASK_SUMMARY_MODEL';
 const TASK_SUMMARY_MODEL_PROVIDER = 'TASK_SUMMARY_MODEL_PROVIDER';
+/** Opt-in: ECS/国内网络常无法直连 registry.npmjs.org，默认不拉 @playwright/mcp。 */
+const TASK_ENABLE_PLAYWRIGHT_MCP = 'TASK_ENABLE_PLAYWRIGHT_MCP';
 
 function parseProvidersJson(raw) {
   const text = String(raw || '').trim();
@@ -23,6 +25,43 @@ function normalizeProviderId(raw) {
   return String(raw || '').trim().toLowerCase();
 }
 
+/**
+ * DeepSeek OpenAI client hits {base}/chat/completions; .../anthropic only serves
+ * Anthropic Messages API → permanent 404 if mixed (TraceId 9257e326bcadc9405df4b150).
+ */
+export function normalizeDeepSeekBaseUrl(provider, baseUrl) {
+  const providerId = normalizeProviderId(provider);
+  let url = String(baseUrl || '').trim().replace(/\/+$/, '');
+  if (providerId !== 'deepseek' || !url) return url;
+  if (url.toLowerCase().includes('/anthropic')) {
+    return 'https://api.deepseek.com/v1';
+  }
+  return url;
+}
+
+function envTruthy(raw) {
+  const v = String(raw || '').trim().toLowerCase();
+  return v === '1' || v === 'true' || v === 'yes' || v === 'on';
+}
+
+function buildPlaywrightMcpSection(env) {
+  const enabled =
+    envTruthy(env?.[TASK_ENABLE_PLAYWRIGHT_MCP]) ||
+    envTruthy(process.env.TASK_ENABLE_PLAYWRIGHT_MCP);
+  if (!enabled) {
+    return 'allow_mcp_servers: []\nmcp_servers: {}\n';
+  }
+  return (
+    'allow_mcp_servers:\n' +
+    '    - playwright\n' +
+    'mcp_servers:\n' +
+    '    playwright:\n' +
+    '        command: npx\n' +
+    '        args:\n' +
+    '            - "@playwright/mcp@0.0.27"\n'
+  );
+}
+
 function buildModelProvidersSection(providers) {
   const lines = [];
   for (const item of providers) {
@@ -30,7 +69,8 @@ function buildModelProvidersSection(providers) {
     const providerName = normalizeProviderId(item.provider);
     if (!providerName) continue;
     const apiKey = String(item.api_key || '').trim() || '<api_key>';
-    const baseUrl = String(item.base_url || '').trim() || '<base_url>';
+    const baseUrl =
+      normalizeDeepSeekBaseUrl(providerName, item.base_url) || '<base_url>';
     const useSubToken = item.use_sub_token ? 'true' : 'false';
     let supportedModels = [];
     const rawModels = item.supported_models;
@@ -83,6 +123,7 @@ export function featureParamsEnvToYaml(env) {
   const agentMaxSteps = String(env[TASK_AGENT_MAX_STEPS] || '').trim() || '200';
   const summaryModel = String(env[TASK_SUMMARY_MODEL] || '').trim() || '<model>';
   const modelProvidersSection = buildModelProvidersSection(providers);
+  const mcpSection = buildPlaywrightMcpSection(env);
 
   return (
     'agents:\n' +
@@ -95,13 +136,7 @@ export function featureParamsEnvToYaml(env) {
     '            - edit_file\n' +
     '            - sequential_thinking\n' +
     '            - complete_task\n' +
-    'allow_mcp_servers:\n' +
-    '    - playwright\n' +
-    'mcp_servers:\n' +
-    '    playwright:\n' +
-    '        command: npx\n' +
-    '        args:\n' +
-    '            - "@playwright/mcp@0.0.27"\n' +
+    mcpSection +
     'lakeview:\n' +
     '    model: lakeview_model\n' +
     '\n' +
@@ -149,4 +184,5 @@ export const FEATURE_PARAMS_ENV_KEYS = {
   TASK_AGENT_MAX_STEPS,
   TASK_SUMMARY_MODEL,
   TASK_SUMMARY_MODEL_PROVIDER,
+  TASK_ENABLE_PLAYWRIGHT_MCP,
 };
