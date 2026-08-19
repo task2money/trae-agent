@@ -92,13 +92,21 @@ export async function postRepoCloneCredentialsWithRetry(prefix, accessToken, tim
         `bootstrap: repo-clone-credentials incomplete attempt=${attempt}/${maxAttempts} wait_ms=${waitMs}` +
           (missing.length ? ` missing=${missing.slice(0, 5).join(',')}` : ''),
       );
+      const failMsg = String(
+        buildRepoCloneCredentialsBootstrapError(e)?.message || e?.message || e,
+      ).slice(0, 800);
       noteBootstrapFailure({
         phase: 'task_detail_or_credentials',
         code: 'REPO_CLONE_CREDENTIALS_INCOMPLETE',
-        message: String(
-          buildRepoCloneCredentialsBootstrapError(e)?.message || e?.message || e,
-        ).slice(0, 800),
+        message: failMsg,
         missing_repo_credentials: missing,
+      });
+      // 首轮 409 即推任务详情，避免心跳已连通、克隆尚未开始时 UI 无限「等待可写层」。
+      emitRuntimeEvent('BOOTSTRAP_FAILED', {
+        level: 'error',
+        phase: 'task_detail_or_credentials',
+        message: failMsg,
+        consoleLine: `[onlineServiceJS] BOOTSTRAP_FAILED phase=task_detail_or_credentials attempt=${attempt}/${maxAttempts} ${failMsg}`,
       });
       if (waitMs > 0) await sleepMs(waitMs);
     }
