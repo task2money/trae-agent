@@ -163,6 +163,40 @@ test('postJson 默认瞬时重试窗口覆盖连续 404（旧 5 次会放弃、�
   }
 });
 
+test('postJson 非 2xx 失败携带响应头 X-Trace-Id（OPT-20260819-044）', async () => {
+  const saved = snapshotEnv(ENV_KEYS);
+  const server = http.createServer((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      res.writeHead(502, {
+        'Content-Type': 'application/json',
+        'X-Trace-Id': 'trace-header-1',
+      });
+      res.end('{}');
+    });
+  });
+  const port = await new Promise((resolve) => {
+    server.listen(0, '127.0.0.1', () => {
+      const addr = server.address();
+      resolve(typeof addr === 'object' && addr ? addr.port : 0);
+    });
+  });
+  try {
+    process.env.TASK_API_POST_JSON_TRANSIENT_RETRIES = '1';
+    process.env.TASK_API_POST_JSON_TRANSIENT_BACKOFF_MS = '0';
+    await assert.rejects(
+      () => postJson(`http://127.0.0.1:${port}/server-container-token/repo-clone-credentials/`, { access_token: 'tok' }, 2),
+      (err) => {
+        assert.strictEqual(err.responseTraceId, 'trace-header-1');
+        return true;
+      },
+    );
+  } finally {
+    restoreEnv(saved);
+    await new Promise((resolve) => server.close(() => resolve(undefined)));
+  }
+});
+
 test('postJsonTransientRetryConfigFromEnv 默认 15 次/400ms，环境变量可覆盖', () => {
   const saved = snapshotEnv(ENV_KEYS);
   try {

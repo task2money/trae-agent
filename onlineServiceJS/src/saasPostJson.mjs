@@ -65,6 +65,10 @@ function normalizePostJsonError(err) {
   if (err && typeof err === 'object' && err.structuredPayload) {
     wrapped.structuredPayload = err.structuredPayload;
   }
+  // OPT-20260819-044: 包装时保留失败响应头 X-Trace-Id，供 BOOTSTRAP_FAILED 透传。
+  if (err && typeof err === 'object' && err.responseTraceId) {
+    wrapped.responseTraceId = String(err.responseTraceId);
+  }
   return wrapped;
 }
 
@@ -259,6 +263,10 @@ export async function postJson(url, body, timeoutSec = 8, opts = {}) {
             if (data && typeof data === 'object' && data.error_code) {
               err.structuredPayload = data;
             }
+            // OPT-20260819-044: 失败响应头 X-Trace-Id 挂到 error，供 BOOTSTRAP_FAILED
+            // runtime-event 透传，使页面 data-traceId 能对齐真正失败的克隆凭证请求。
+            const respTraceId = String(r.headers.get('X-Trace-Id') || '').trim();
+            if (respTraceId) err.responseTraceId = respTraceId;
             if (isTransientHttpStatus(r.status)) {
               err.retryableHttpStatus = r.status;
             }

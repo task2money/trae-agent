@@ -156,10 +156,13 @@ export async function runBootstrapAfterListen(ctx) {
       missing_repo_credentials: summarizeMissingRepoCredentials(payload),
     });
     const failMsg = String(wrapped?.message || wrapped).slice(0, 500);
+    const respTraceId =
+      String(wrapped?.responseTraceId || wrapped?.cause?.responseTraceId || e?.responseTraceId || e?.cause?.responseTraceId || '').trim();
     emitRuntimeEvent('BOOTSTRAP_FAILED', {
       level: 'error',
       phase: 'task_detail_or_credentials',
       message: failMsg,
+      trace_id: respTraceId,
       consoleLine: `[onlineServiceJS] BOOTSTRAP_FAILED phase=task_detail_or_credentials ${failMsg}`,
     });
     if (!fromRecovery && isRepoCloneCredentialsIncompleteError(e)) {

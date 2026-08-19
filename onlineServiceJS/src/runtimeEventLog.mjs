@@ -31,6 +31,7 @@ const ALLOWED = new Set([
  *   level?: string,
  *   phase?: string,
  *   message?: string,
+ *   trace_id?: string,
  *   fields?: Record<string, unknown>,
  *   consoleLine?: string,
  *   postFn?: typeof postRuntimeEventToSaas,
@@ -45,6 +46,7 @@ export function emitRuntimeEvent(event, opts = {}) {
   const level = String(opts.level || 'info').toLowerCase();
   const phase = String(opts.phase || '').trim();
   const message = String(opts.message || '').trim();
+  const traceId = String(opts.trace_id || '').trim();
   const fields = opts.fields && typeof opts.fields === 'object' ? opts.fields : {};
 
   logJson(level, name, {
@@ -52,6 +54,7 @@ export function emitRuntimeEvent(event, opts = {}) {
     event: name,
     ...(phase ? { phase } : {}),
     ...(message ? { detail: message.slice(0, 800) } : {}),
+    ...(traceId ? { trace_id: traceId } : {}),
     ...fields,
   });
 
@@ -69,6 +72,7 @@ export function emitRuntimeEvent(event, opts = {}) {
       level,
       phase,
       message,
+      trace_id: traceId,
       fields,
     }),
   ).catch(() => {});
@@ -76,7 +80,7 @@ export function emitRuntimeEvent(event, opts = {}) {
 
 /**
  * Soft-fail POST …/server-container-token/runtime-event/
- * @param {{ event: string, level?: string, phase?: string, message?: string, fields?: object }} payload
+ * @param {{ event: string, level?: string, phase?: string, message?: string, trace_id?: string, fields?: object }} payload
  */
 export async function postRuntimeEventToSaas(payload) {
   let cloudPrefix;
@@ -99,6 +103,8 @@ export async function postRuntimeEventToSaas(payload) {
   if (phase) body.phase = phase;
   const message = String(payload?.message || '').trim();
   if (message) body.message = message.slice(0, 800);
+  const traceId = String(payload?.trace_id || '').trim();
+  if (traceId) body.trace_id = traceId;
   if (payload?.fields && typeof payload.fields === 'object') {
     body.fields = payload.fields;
   }
