@@ -113,7 +113,26 @@ export function buildLayersSnapshot(bootstrapLayerId) {
   for (const row of rows) {
     const lid = row.layer_id;
     const meta = readLayerMeta(lid);
-    if (meta?.kind === 'empty') continue;
+    if (meta?.kind === 'empty') {
+      // 引导空层锚点：心跳早于克隆时若过滤掉，层图会变成 0 节点。
+      // 输出为「正在准备可写层」的 pending 节点，前端据此展示引导中文案而非空白。
+      layers.push({
+        layer_id: lid,
+        created_at: row.created_at,
+        command: null,
+        parent_layer_id: resolvedParentLayerId(lid, known, jobsList),
+        job_id: null,
+        job_status: null,
+        queue_depth: 0,
+        queue_items: [],
+        mind_state: 'pending',
+        git_worktree_dirty: false,
+        git_remote: null,
+        meta_kind: 'empty',
+        bootstrap_pending: true,
+      });
+      continue;
+    }
     let displayCmd = cmdByLayer[lid] || null;
     if (!displayCmd && meta?.kind === 'clone' && meta.clone_url) {
       displayCmd = `git clone ${meta.clone_url}`;
