@@ -7,7 +7,8 @@
  * @returns {{ recv: number|null, unpack: number|null, overall: number }}
  */
 export function parseGitCloneProgressPhases(stderrAll) {
-  const tail = stderrAll.length > 12000 ? stderrAll.slice(-12000) : stderrAll;
+  const text = String(stderrAll || '');
+  const tail = text.length > 12000 ? text.slice(-12000) : text;
   let bestRecv = -1;
   for (const m of tail.matchAll(/Receiving objects:\s*(\d+)%/g)) {
     const v = parseInt(m[1], 10);
@@ -22,7 +23,8 @@ export function parseGitCloneProgressPhases(stderrAll) {
   for (const re of secondary) {
     re.lastIndex = 0;
     let m;
-    while ((m = re.exec(tail)) !== null) {
+    // 解压/Checkout 取全文峰值：大仓 12k 尾窗常被后续 Receiving 3% 挤掉已完成的 100%。
+    while ((m = re.exec(text)) !== null) {
       const v = parseInt(m[1], 10);
       if (Number.isFinite(v)) bestSecondary = Math.max(bestSecondary, v);
     }
@@ -37,6 +39,21 @@ export function parseGitCloneProgressPhases(stderrAll) {
     unpack: bestSecondary >= 0 ? bestSecondary : null,
     overall: overall >= 0 ? overall : -1,
   };
+}
+
+/**
+ * 同一次 git clone 进程内百分比只升不降（重试会新开进程、lastPct 重置）。
+ * @param {number} lastPct
+ * @param {number} nextPct
+ * @param {number} nowMs
+ * @param {number} lastPostedMs
+ */
+export function shouldEmitGitCloneProgressPercent(lastPct, nextPct, nowMs, lastPostedMs) {
+  if (!Number.isFinite(nextPct) || nextPct < 0) return false;
+  if (Number.isFinite(lastPct) && lastPct >= 0 && nextPct < lastPct) return false;
+  if (nextPct === lastPct && nowMs - lastPostedMs < 2000) return false;
+  if (nowMs - lastPostedMs < 400 && nextPct <= lastPct) return false;
+  return true;
 }
 
 /**

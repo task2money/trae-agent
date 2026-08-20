@@ -22,6 +22,7 @@ import {
   gitCloneRetryConfigFromEnv,
   isRetryableGitCloneFailure,
   runGitCloneWithProgress,
+  shouldEmitGitCloneProgressPercent,
 } from './saasTaskCloud.mjs';
 import {
   getExecStreamManifest,
@@ -284,12 +285,9 @@ export function registerReposCloneRoutes(api) {
                 }
                 if (!prefix || !accessToken) return;
                 const g = latestGitProgressPercent(errAll);
-                if (g < 0) return;
-                const now = Date.now();
-                if (g === lastPct && now - lastPosted < 2000) return;
-                if (now - lastPosted < 400 && g <= lastPct) return;
+                if (!shouldEmitGitCloneProgressPercent(lastPct, g, Date.now(), lastPosted)) return;
                 lastPct = g;
-                lastPosted = now;
+                lastPosted = Date.now();
                 const phases = parseGitCloneProgressPhases(errAll);
                 const seg = { phase: 'reclone' };
                 if (phases.recv != null) seg.recv_progress = phases.recv;

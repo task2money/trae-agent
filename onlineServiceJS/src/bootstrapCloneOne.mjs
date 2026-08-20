@@ -11,6 +11,7 @@ import {
   gitCloneRetryConfigFromEnv,
   isRetryableGitCloneFailure,
   runGitCloneWithProgress,
+  shouldEmitGitCloneProgressPercent,
 } from './saasTaskCloud.mjs';
 import { bootstrapRepoLogState } from './bootstrapState.mjs';
 import { prepareOauthHttpsGitClone } from './bootstrapRepoCredentials.mjs';
@@ -61,12 +62,9 @@ export async function runOneBootstrapClone({
             if (ent) ent.body += normalizeGitProgressChunkForLog(chunk);
           }
           const g = latestGitProgressPercent(errAll);
-          if (g < 0) return;
-          const now = Date.now();
-          if (g === lastPct && now - lastPosted < 2000) return;
-          if (now - lastPosted < 400 && g <= lastPct) return;
+          if (!shouldEmitGitCloneProgressPercent(lastPct, g, Date.now(), lastPosted)) return;
           lastPct = g;
-          lastPosted = now;
+          lastPosted = Date.now();
           const phases = parseGitCloneProgressPhases(errAll);
           const seg = { phase: 'bootstrap', index: i + 1, total: n };
           if (phases.recv != null) seg.recv_progress = phases.recv;

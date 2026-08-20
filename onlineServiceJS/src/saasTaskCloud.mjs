@@ -26,6 +26,7 @@ export {
   parseGitCloneProgressPhases,
   latestGitProgressPercent,
   normalizeGitProgressChunkForLog,
+  shouldEmitGitCloneProgressPercent,
 } from './saasTaskCloudGitProgress.mjs';
 export {
   postCloneProgress,
