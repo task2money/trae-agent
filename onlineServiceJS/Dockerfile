@@ -158,6 +158,7 @@ COPY pyproject.toml README.md /app/
 COPY trae_agent /app/trae_agent
 COPY trae_agent_online /app/trae_agent_online
 COPY onlineServiceJS/autoRunStep.md /app/autoRunStep.md
+COPY onlineServiceJS/imageSkills.yaml /app/imageSkills.yaml
 COPY --from=pydeps /app/.venv /app/.venv
 
 COPY onlineServiceJS/package.json onlineServiceJS/package-lock.json /app/onlineServiceJS/
