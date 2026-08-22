@@ -197,6 +197,66 @@ test('triggerAutoRunDeliveryForJob persists last_push_error for ztree', async ()
   assert.equal(cleared.length, 0);
 });
 
+test('triggerAutoRunDeliveryForJob backfills even when delivery skipped as done', async () => {
+  let backfillOpts = null;
+  const result = await triggerAutoRunDeliveryForJob(
+    {
+      layer_id: 'L-skip',
+      auto_run_first: true,
+      mounted_agent_comment_id: 'agent-skip',
+    },
+    {
+      lastBootstrapTaskDetail: {
+        task: { title: 'T', target_branch: 'feat/x', auto_run: true },
+        at_mention_run: { source: 'auto_run', agent_comment_id: 'agent-skip' },
+      },
+      runAutoRunDelivery: async () => ({ ok: true, skipped: true, reason: 'done_marker' }),
+      backfillAutoRunPrToAgentComment: async (opts) => {
+        backfillOpts = opts;
+        return { ok: true };
+      },
+      readLayerPrHtmlUrl: () => 'https://gitlab.example/a/b/-/merge_requests/4',
+    },
+  );
+  assert.equal(result.ok, true);
+  assert.equal(result.skipped, true);
+  assert.equal(backfillOpts.agentCommentId, 'agent-skip');
+  assert.equal(backfillOpts.rememberedPrUrl, 'https://gitlab.example/a/b/-/merge_requests/4');
+});
+
+test('triggerAutoRunDeliveryForJob resolves agent id from context_pack.at_mention_run', async () => {
+  let backfillOpts = null;
+  await triggerAutoRunDeliveryForJob(
+    {
+      layer_id: 'L-pack',
+      auto_run_first: true,
+    },
+    {
+      lastBootstrapTaskDetail: {
+        task: { title: 'T', target_branch: 'feat/x', auto_run: true },
+        context_pack: {
+          at_mention_run: { source: 'auto_run', agent_comment_id: 'agent-pack' },
+        },
+      },
+      runAutoRunDelivery: async () => ({
+        ok: true,
+        pushResult: {
+          payload: {
+            github_oauth_multirepo: {
+              repos: [{ pr: { html_url: 'https://gitlab.example/a/b/-/merge_requests/5' } }],
+            },
+          },
+        },
+      }),
+      backfillAutoRunPrToAgentComment: async (opts) => {
+        backfillOpts = opts;
+        return { ok: true };
+      },
+    },
+  );
+  assert.equal(backfillOpts.agentCommentId, 'agent-pack');
+});
+
 test('retryPendingAutoRunDeliveries only retries unfinished auto_run_first completed jobs', async () => {
   const triggered = [];
   const out = await retryPendingAutoRunDeliveries({

@@ -25,6 +25,30 @@ test('extractPrUrlsFromPushResult reads repos[].pr.html_url', () => {
   ]);
 });
 
+test('extractPrUrlsFromPushResult reads github_oauth_multirepo.repos[].pr.html_url', () => {
+  const urls = extractPrUrlsFromPushResult({
+    payload: {
+      ok: true,
+      github_oauth_multirepo: {
+        repos: [
+          { pr: { html_url: 'https://gitlab-tencent-sh-1.aidevpush.com/ljy/somanyad/-/merge_requests/2' } },
+        ],
+      },
+    },
+  });
+  assert.deepEqual(urls, [
+    'https://gitlab-tencent-sh-1.aidevpush.com/ljy/somanyad/-/merge_requests/2',
+  ]);
+});
+
+test('extractPrUrlsFromPushResult includes rememberedPrUrl when payload has no PR', () => {
+  const urls = extractPrUrlsFromPushResult(
+    { payload: { ok: true } },
+    { rememberedPrUrl: 'https://gitlab.example/a/b/-/merge_requests/9' },
+  );
+  assert.deepEqual(urls, ['https://gitlab.example/a/b/-/merge_requests/9']);
+});
+
 test('composeAutoRunPrBackfillReply formats single and clean skip', () => {
   assert.match(
     composeAutoRunPrBackfillReply({ urls: ['https://pr'] }),
@@ -62,6 +86,21 @@ test('backfillAutoRunPrToAgentComment calls complete with PR text', async () => 
   assert.equal(out.ok, true);
   assert.equal(saw.agentCommentId, 'agent-1');
   assert.match(saw.assistantResponse, /https:\/\/github.com\/acme\/demo\/pull\/3/);
+});
+
+test('backfillAutoRunPrToAgentComment uses rememberedPrUrl when payload has no repos', async () => {
+  let saw = null;
+  const out = await backfillAutoRunPrToAgentComment({
+    agentCommentId: 'agent-1',
+    pushResult: { payload: { ok: true } },
+    rememberedPrUrl: 'https://gitlab.example/a/b/-/merge_requests/9',
+    completeFn: async (opts) => {
+      saw = opts;
+      return { ok: true };
+    },
+  });
+  assert.equal(out.ok, true);
+  assert.match(saw.assistantResponse, /merge_requests\/9/);
 });
 
 test('backfillAutoRunPrToAgentComment skips without agent id', async () => {

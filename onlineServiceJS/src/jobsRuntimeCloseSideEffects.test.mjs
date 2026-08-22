@@ -53,6 +53,24 @@ test('interrupted job skips delivery even with auto_run_first', async () => {
   assert.equal(delivered, false);
 });
 
+test('mounted agent with empty output still delivers (PR backfill must run)', async () => {
+  const calls = [];
+  const out = await finalizeJobCloseSideEffects({
+    wasInterrupted: false,
+    mountedAgentId: 'cmt_agent_1',
+    rec: { status: 'completed', auto_run_first: true, output: '' },
+    exitCode: 0,
+    completeMountedAgentComment: async () => {
+      calls.push('complete');
+    },
+    triggerAutoRunDeliveryForJobAndMirror: async () => {
+      calls.push('deliver');
+    },
+  });
+  assert.equal(out.deliveryTriggered, true);
+  assert.deepEqual(calls, ['deliver']);
+});
+
 test('with mounted agent: complete comment then deliver', async () => {
   const calls = [];
   const out = await finalizeJobCloseSideEffects({

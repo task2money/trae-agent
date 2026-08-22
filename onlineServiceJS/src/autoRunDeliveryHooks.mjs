@@ -10,6 +10,23 @@ import {
   rememberLayerLastPushError,
   clearLayerLastPushError,
 } from './layerFsGitLastPushError.mjs';
+import { readLayerPrHtmlUrl } from './layerFsGitRemote.mjs';
+
+/**
+ * credential task-detail 可能把 at_mention_run 放在顶层，也可能只在 context_pack。
+ * @param {object|null|undefined} detail
+ * @returns {object|null}
+ */
+export function resolveAtMentionRun(detail) {
+  if (detail?.at_mention_run && typeof detail.at_mention_run === 'object') {
+    return detail.at_mention_run;
+  }
+  const pack = detail?.context_pack;
+  if (pack?.at_mention_run && typeof pack.at_mention_run === 'object') {
+    return pack.at_mention_run;
+  }
+  return null;
+}
 
 /**
  * 与 bootstrap 工作分支解析一致：task.target_branch → branch_strategy.work_branch_name → target_branch_name。
@@ -88,20 +105,24 @@ export async function triggerAutoRunDeliveryForJob(rec, deps = {}) {
       result.agent_ensure = { ok: false, detail: String(e?.message || e).slice(0, 400) };
     }
   }
+  const mention = resolveAtMentionRun(detail);
   const agentCommentId =
     String(rec?.mounted_agent_comment_id || '').trim() ||
-    String(detail?.at_mention_run?.agent_comment_id || '').trim();
-  const source = String(detail?.at_mention_run?.source || '').trim().toLowerCase();
+    String(mention?.agent_comment_id || '').trim();
+  const source = String(mention?.source || '').trim().toLowerCase();
   const shouldBackfill =
     Boolean(agentCommentId) &&
-    (source === 'auto_run' || Boolean(rec?.auto_run_first) || isEditRun);
-  const skippedOk = Boolean(result?.skipped && result?.ok);
-  if (shouldBackfill && !skippedOk) {
+    (source === 'auto_run' || source === 'edit_run' || Boolean(rec?.auto_run_first) || isEditRun);
+  if (shouldBackfill) {
+    const readPr = deps.readLayerPrHtmlUrl || readLayerPrHtmlUrl;
+    const rememberedPrUrl =
+      layerId && typeof readPr === 'function' ? String(readPr(layerId) || '').trim() : '';
     const backfillFn = deps.backfillAutoRunPrToAgentComment || backfillAutoRunPrToAgentComment;
     try {
       result.pr_backfill = await backfillFn({
         agentCommentId,
         pushResult: result.pushResult,
+        rememberedPrUrl,
         skippedClean: Boolean(result.skipped_clean),
         priorAssistantResponse: String(rec?.output || '').trim(),
         kind: isEditRun ? 'edit_run' : 'auto_run',

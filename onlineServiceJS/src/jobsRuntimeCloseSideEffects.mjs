@@ -45,9 +45,8 @@ export async function finalizeJobCloseSideEffects(opts) {
           );
           return { deliveryTriggered: false, idleEligible: false, reason: 'mounted_complete_failed' };
         }
-      } else if (typeof completeFn === 'function' && !text) {
-        return { deliveryTriggered: false, idleEligible: false, reason: 'mounted_complete_empty' };
       }
+      // 空 output 不 complete、也不阻断交付：PR 回填会在 delivery 后写入 Agent 回复
     } else if (rec.status === 'failed' && typeof failFn === 'function') {
       try {
         await failFn({

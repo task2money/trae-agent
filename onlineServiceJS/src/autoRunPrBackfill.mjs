@@ -7,11 +7,22 @@ import { emitRuntimeEvent } from './runtimeEventLog.mjs';
 import { withSaasInboundScope } from './saasInboundScope.mjs';
 import { traceHeadersForOutbound } from './traceId.mjs';
 
+function collectRepoPrUrls(repos, push) {
+  const list = Array.isArray(repos) ? repos : [];
+  for (const row of list) {
+    if (!row || typeof row !== 'object') continue;
+    push(row?.pr?.html_url);
+    push(row?.pr?.web_url);
+    push(row?.github_pull_request?.html_url);
+  }
+}
+
 /**
  * @param {object|null|undefined} pushResult runLayerOauthRefreshPush 返回值
+ * @param {{ rememberedPrUrl?: string }} [extra] 层目录 git_pr_html_url 兜底（payload 不含 repos[] 时）
  * @returns {string[]}
  */
-export function extractPrUrlsFromPushResult(pushResult) {
+export function extractPrUrlsFromPushResult(pushResult, extra = {}) {
   const urls = [];
   const seen = new Set();
   const push = (u) => {
@@ -23,12 +34,13 @@ export function extractPrUrlsFromPushResult(pushResult) {
   const payload = pushResult?.payload && typeof pushResult.payload === 'object' ? pushResult.payload : {};
   push(payload?.github_pull_request?.html_url);
   push(payload?.pull_request?.html_url);
-  const repos = Array.isArray(payload?.repos) ? payload.repos : [];
-  for (const row of repos) {
-    if (!row || typeof row !== 'object') continue;
-    push(row?.pr?.html_url);
-    push(row?.github_pull_request?.html_url);
+  push(payload?.git_remote?.pr_html_url);
+  collectRepoPrUrls(payload?.repos, push);
+  const multi = payload?.github_oauth_multirepo;
+  if (multi && typeof multi === 'object') {
+    collectRepoPrUrls(multi.repos, push);
   }
+  push(extra?.rememberedPrUrl);
   return urls;
 }
 
@@ -139,6 +151,7 @@ export async function completeMountedAgentComment(opts) {
  * @param {{
  *   agentCommentId?: string,
  *   pushResult?: object,
+ *   rememberedPrUrl?: string,
  *   skippedClean?: boolean,
  *   kind?: 'auto_run'|'edit_run',
  *   completeFn?: typeof completeMountedAgentComment,
@@ -149,7 +162,9 @@ export async function backfillAutoRunPrToAgentComment(opts = {}) {
   if (!agentCommentId) {
     return { ok: false, skipped: true, reason: 'no_agent_comment_id' };
   }
-  const urls = extractPrUrlsFromPushResult(opts?.pushResult);
+  const urls = extractPrUrlsFromPushResult(opts?.pushResult, {
+    rememberedPrUrl: opts?.rememberedPrUrl,
+  });
   const prText = composeAutoRunPrBackfillReply({
     urls,
     skippedClean: Boolean(opts?.skippedClean),
