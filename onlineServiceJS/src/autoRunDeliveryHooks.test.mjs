@@ -165,6 +165,38 @@ test('triggerAutoRunDeliveryForJob backfills delivery failure into mounted agent
   assert.equal(backfillOpts.agentCommentId, 'agent-fail');
 });
 
+test('triggerAutoRunDeliveryForJob persists last_push_error for ztree', async () => {
+  const remembered = [];
+  const cleared = [];
+  await triggerAutoRunDeliveryForJob(
+    {
+      layer_id: '20260822_092914_76165f',
+      auto_run_first: true,
+    },
+    {
+      lastBootstrapTaskDetail: { task: { title: 'T', target_branch: 'feat/x' } },
+      runAutoRunDelivery: async () => ({
+        ok: false,
+        pushResult: {
+          httpStatus: 400,
+          payload: { ok: false, detail: '该仓库未找到可用的 OAuth access_token' },
+        },
+      }),
+      rememberLayerLastPushError: (layerId, detail, opts) => {
+        remembered.push({ layerId, detail, opts });
+        return true;
+      },
+      clearLayerLastPushError: (layerId) => {
+        cleared.push(layerId);
+      },
+    },
+  );
+  assert.equal(remembered.length, 1);
+  assert.equal(remembered[0].layerId, '20260822_092914_76165f');
+  assert.match(remembered[0].detail, /OAuth access_token/);
+  assert.equal(cleared.length, 0);
+});
+
 test('retryPendingAutoRunDeliveries only retries unfinished auto_run_first completed jobs', async () => {
   const triggered = [];
   const out = await retryPendingAutoRunDeliveries({

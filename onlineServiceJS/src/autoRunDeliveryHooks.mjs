@@ -6,6 +6,10 @@ import { collectRepoBranchPlans } from './bootstrapWorkBranch.mjs';
 import { runAutoRunDelivery, shouldSkipAutoRunDelivery } from './autoRunOrchestration.mjs';
 import { backfillAutoRunPrToAgentComment } from './autoRunPrBackfill.mjs';
 import { ensureEditRunMountedAgentComment } from './editRunAgentComment.mjs';
+import {
+  rememberLayerLastPushError,
+  clearLayerLastPushError,
+} from './layerFsGitLastPushError.mjs';
 
 /**
  * 与 bootstrap 工作分支解析一致：task.target_branch → branch_strategy.work_branch_name → target_branch_name。
@@ -50,6 +54,19 @@ export async function triggerAutoRunDeliveryForJob(rec, deps = {}) {
       ? { force: true, editRunJobId: String(rec?.id || '').trim() }
       : {}),
   });
+  const rememberErr = deps.rememberLayerLastPushError || rememberLayerLastPushError;
+  const clearErr = deps.clearLayerLastPushError || clearLayerLastPushError;
+  const layerId = String(rec?.layer_id || '').trim();
+  if (layerId) {
+    if (result?.ok) {
+      clearErr(layerId);
+    } else {
+      const detail = String(result?.pushResult?.payload?.detail || result?.detail || '').trim();
+      rememberErr(layerId, detail || 'push 失败', {
+        traceId: result?.traceId || result?.pushResult?.traceId,
+      });
+    }
+  }
   if (typeof mirrorFn === 'function') {
     try {
       await mirrorFn();

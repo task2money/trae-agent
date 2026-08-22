@@ -11,6 +11,10 @@ import {
   layerPrimaryGitWorkdir,
   layerGitWorkdirRootsForFileListing,
 } from './layerFs.mjs';
+import {
+  clearLayerLastPushError,
+  withRememberedLastPushError,
+} from './layerFsGitLastPushError.mjs';
 
 function dirHasGit(p) {
   try {
@@ -115,6 +119,7 @@ export function rememberLayerPrHtmlUrl(layerId, htmlUrl) {
   const root = layerPath(lid);
   if (!fs.existsSync(root)) return false;
   fs.writeFileSync(gitPrHtmlUrlPath(lid), `${url}\n`, 'utf8');
+  clearLayerLastPushError(lid);
   return true;
 }
 
@@ -138,8 +143,11 @@ export function readLayerPrHtmlUrl(layerId) {
 /** @param {object} snap @param {string} layerId */
 function withRememberedPrHtmlUrl(snap, layerId) {
   const pr = readLayerPrHtmlUrl(layerId);
-  if (!pr || !snap || typeof snap !== 'object') return snap;
-  return { ...snap, pr_html_url: pr };
+  let out = snap;
+  if (pr && snap && typeof snap === 'object') {
+    out = { ...snap, pr_html_url: pr };
+  }
+  return withRememberedLastPushError(out, layerId);
 }
 
 /**
@@ -372,7 +380,7 @@ export function layerGitRemoteSnapshot(layerId, opts = {}) {
   );
   if (!roots.length) {
     const work = layerPrimaryGitWorkdir(lid);
-    if (!work || !dirHasGit(work)) return empty;
+    if (!work || !dirHasGit(work)) return withRememberedPrHtmlUrl({ ...empty }, lid);
     return withRememberedPrHtmlUrl(gitRemoteSnapshotForWorkdir(work, perOpts), lid);
   }
 

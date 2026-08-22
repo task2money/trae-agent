@@ -9,6 +9,7 @@ import { buildOauthAccessPushAuthFromTokenPayload, tokenPayloadHasPushAuth } fro
 import fs from 'fs';
 import path from 'path';
 import { logsDir } from './paths.mjs';
+import { rememberLayerLastPushError } from './layerFsGitLastPushError.mjs';
 
 function appendOauthRefreshPushLog(line) {
   try {
@@ -140,12 +141,14 @@ export async function runLayerOauthRefreshPush(opts) {
     appendOauthRefreshPushLog(
       `oauth-refresh-push fail layer_id=${layerId} detail=layer-github-oauth-access-tokens ${String(e?.message || e).slice(0, 320)}`,
     );
+    const payload = {
+      ok: false,
+      detail: `从 task2app 拉取 GitHub AccessToken 失败：${String(e?.message || e).slice(0, 500)}`,
+    };
+    rememberLayerLastPushError(layerId, payload.detail, { traceId });
     return {
       httpStatus: 502,
-      payload: {
-        ok: false,
-        detail: `从 task2app 拉取 GitHub AccessToken 失败：${String(e?.message || e).slice(0, 500)}`,
-      },
+      payload,
     };
   }
 
@@ -155,15 +158,17 @@ export async function runLayerOauthRefreshPush(opts) {
     appendOauthRefreshPushLog(
       `oauth-refresh-push fail layer_id=${layerId} detail=no github_auth_by_repo partial=${String(partial || '').slice(0, 240)}`,
     );
+    const payload = {
+      ok: false,
+      detail: partial
+        ? String(partial)
+        : 'task2app 未返回可用的 github_auth_by_repo',
+      repo_slugs: repoSlugs,
+    };
+    rememberLayerLastPushError(layerId, payload.detail, { traceId });
     return {
       httpStatus: 409,
-      payload: {
-        ok: false,
-        detail: partial
-          ? String(partial)
-          : 'task2app 未返回可用的 github_auth_by_repo',
-        repo_slugs: repoSlugs,
-      },
+      payload,
     };
   }
   appendOauthRefreshPushLog(

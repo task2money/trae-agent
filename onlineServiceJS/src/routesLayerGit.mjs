@@ -13,6 +13,10 @@ import {
   rememberLayerPrHtmlUrl,
   layerGitRemoteSnapshot,
 } from './layerFs.mjs';
+import {
+  rememberLayerLastPushError,
+  clearLayerLastPushError,
+} from './layerFsGitLastPushError.mjs';
 import { suggestStagedCommitMessage } from './stagedCommitSuggest.mjs';
 import { commitLayerGitWorkdirs } from './layerGitCommit.mjs';
 import { runLayerGitMerge } from './layerGitMerge.mjs';
@@ -365,6 +369,7 @@ export function registerLayerGitRoutes(api) {
       }
       console.log('[LayerGitPush] ok layer_id=%s ref=%s', req.params.layer_id, pushedRef);
       appendGitPushReqLog(`api layer_id=${layerId} ok ref=${pushedRef}`);
+      clearLayerLastPushError(layerId);
       res.json({
         ok: true,
         git_remote: layerGitRemoteSnapshot(layerId, branch ? { compareBranch: branch } : {}),
@@ -374,6 +379,7 @@ export function registerLayerGitRoutes(api) {
       appendGitPushReqLog(
         `api layer_id=${layerId} fail ${cmdLine ? `cmd=${cmdLine} ` : ''}err=${String(e.message || e).slice(0, 800)}`,
       );
+      rememberLayerLastPushError(layerId, String(e.message || e));
       res.status(400).json({ detail: String(e.message || e) });
     }
   });

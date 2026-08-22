@@ -14,6 +14,10 @@ import {
   rememberLayerGitPushCompareBranch,
   rememberLayerPrHtmlUrl,
 } from './layerFs.mjs';
+import {
+  rememberLayerLastPushError,
+  clearLayerLastPushError,
+} from './layerFsGitLastPushError.mjs';
 import { workdirNeedsPush } from './layerGitCommit.mjs';
 import { appendGitPushReqLog } from './outboundReqLog.mjs';
 import { createGithubPullRequest, createGitlabMergeRequest } from './layerGitOauthPushPr.mjs';
@@ -451,6 +455,7 @@ export async function runLayerGithubOauthAccessPush(opts) {
   const notOk = repos.filter((r) => !r.push_ok);
   if (notOk.length) {
     const detail = formatOauthMultiRepoPushDetail(repos);
+    rememberLayerLastPushError(layerId, detail);
     appendGitPushReqLog(
       `oauth layer_id=${layerId} fail reason=${pushedOk.length ? 'partial_push' : 'no_successful_push'} ok=${pushedOk.length} failed=${notOk.length}`,
     );
@@ -469,6 +474,8 @@ export async function runLayerGithubOauthAccessPush(opts) {
     .find((u) => u);
   if (firstPrUrl) {
     rememberLayerPrHtmlUrl(layerId, firstPrUrl);
+  } else {
+    clearLayerLastPushError(layerId);
   }
   const gitRemote = layerGitRemoteSnapshot(layerId, { compareBranch: headName || targetBranch });
   return {
