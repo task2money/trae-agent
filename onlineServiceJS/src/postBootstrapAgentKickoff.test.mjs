@@ -105,6 +105,26 @@ test('runPostBootstrapAgentKickoff starts auto_run when no at_mention_run', asyn
   assert.equal(calls[0].auto_run_first, true);
 });
 
+test('runPostBootstrapAgentKickoff starts at_mention when auto_run is false', async () => {
+  tmpState();
+  const calls = [];
+  const out = await runPostBootstrapAgentKickoff({
+    detail: {
+      ...validAtMentionDetail,
+      task: { auto_run: false, title: 'Ignore me', description: 'not used' },
+    },
+    layerId: 'layer_mention_no_autorun',
+    createJobFn: async (body) => {
+      calls.push(body);
+      return { id: 'job_mention', layer_id: 'layer_mention_no_autorun' };
+    },
+  });
+  assert.equal(out.kind, 'at_mention');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].at_mention_run, true);
+  assert.match(String(calls[0].command), /Please fix the bug/);
+});
+
 test('runPostBootstrapAgentKickoff returns null kind when auto_run false and no at_mention', async () => {
   tmpState();
   let called = 0;
