@@ -66,6 +66,25 @@ export function detailHasAtMentionRun(detail) {
   return Boolean(run && typeof run === 'object');
 }
 
+/**
+ * at_mention_run 缺失（notify 失败/空 URL，案例 116）时，从 detail 内
+ * context_pack.comment_thread 取最后一条人类评论作为兜底指令（OPT-20260822-021）。
+ * 线程结构与 normalizeAtMentionContextPack 的 comment_thread 一致。
+ */
+export function composeFallbackCommandFromDetail(detail) {
+  const pack = detail?.context_pack;
+  const thread = Array.isArray(pack?.comment_thread) ? pack.comment_thread : [];
+  for (let i = thread.length - 1; i >= 0; i -= 1) {
+    const item = thread[i];
+    if (!item || typeof item !== 'object') continue;
+    const kind = String(item.kind || 'human').toLowerCase();
+    if (kind !== 'human') continue;
+    const content = String(item.content || '').trim();
+    if (content) return content;
+  }
+  return '';
+}
+
 export function shouldTriggerAtMentionJob({ packOk, layerId, command, markerExists }) {
   return (
     Boolean(packOk) &&
@@ -138,5 +157,62 @@ export async function maybeStartAtMentionJob(opts) {
   console.log(
     `[onlineServiceJS] event=at_mention_job_started job_id=${String(rec?.id || '')} run_id=${String(run.run_id || '')} layer_id=${String(rec?.layer_id || '')}`,
   );
+  return rec;
+}
+
+/**
+ * at_mention_run 缺失但容器以 COMMENT_ID 启动（案例 116：AICommentServiceURL 空导致
+ * notify 失败、无 pending Agent 评论）时，用评论内容兜底补跑首条 trae job。
+ * 仅在 auto_run=false（auto_run 路径会建 job 时不重复）触发；幂等复用 at_mention 标记。
+ * @returns {Promise<object|null>} createJob 返回的 rec，或 null（未触发）
+ */
+export async function maybeStartCommentIdFallbackJob(opts) {
+  const detail = opts?.detail;
+  const layerId = String(opts?.layerId || '').trim();
+  const createJobFn = opts?.createJobFn;
+  const fsApi = opts?.fsApi || fs;
+  const log = opts?.log || console;
+
+  if (typeof createJobFn !== 'function') {
+    throw new Error('createJobFn required');
+  }
+  const commentId = String(opts?.commentId || '').trim();
+  if (!commentId) return null;
+  if (detailHasAtMentionRun(detail)) return null; // 正常 at_mention 路径优先
+  if (Boolean(detail?.task?.auto_run)) return null; // auto_run 会建 job，避免双建
+  if (!layerId) return null;
+  if (hasAtMentionJobMarker(fsApi)) return null; // 幂等
+
+  let command = composeFallbackCommandFromDetail(detail);
+  if (!command && typeof opts.fetchCommentContent === 'function') {
+    try {
+      const fetched = await opts.fetchCommentContent(commentId);
+      command = String(fetched?.content || '').trim();
+    } catch (e) {
+      log.warn?.(
+        `[onlineServiceJS] COMMENT_ID_FALLBACK_FETCH_FAILED comment_id=${commentId} err=${String(e?.message || e).slice(0, 200)}`,
+      );
+    }
+  }
+  if (!command) {
+    log.warn?.(
+      `[onlineServiceJS] COMMENT_ID_FALLBACK_SKIP comment_id=${commentId} reason=empty_command`,
+    );
+    return null;
+  }
+
+  log.log?.(
+    `[onlineServiceJS] COMMENT_ID_FALLBACK_START comment_id=${commentId} command_len=${command.length}`,
+  );
+  const rec = await createJobFn({
+    command,
+    command_kind: 'trae',
+    repo_layer_id: layerId,
+    at_mention_run: true,
+    at_mention_run_id: '',
+    at_mention_agent_comment_id: '',
+    comment_id_fallback: true,
+  });
+  writeAtMentionJobMarker(rec?.id, { comment_id_fallback: true, comment_id: commentId }, fsApi);
   return rec;
 }
