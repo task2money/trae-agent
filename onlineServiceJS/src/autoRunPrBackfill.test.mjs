@@ -31,6 +31,10 @@ test('composeAutoRunPrBackfillReply formats single and clean skip', () => {
     /https:\/\/pr/,
   );
   assert.match(composeAutoRunPrBackfillReply({ skippedClean: true }), /干净/);
+  assert.match(
+    composeAutoRunPrBackfillReply({ failed: true, detail: '该仓库未找到可用的 OAuth access_token' }),
+    /失败：该仓库未找到可用的 OAuth access_token/,
+  );
 });
 
 test('buildContainerAgentCompleteUrl strips /cloud suffix', () => {

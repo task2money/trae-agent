@@ -573,4 +573,76 @@ describe('layerGitOauthRefreshPush', () => {
       fs.rmSync(stateRoot, { recursive: true, force: true });
     }
   });
+
+  test('runLayerOauthRefreshPush 把 GitLab match-key token 传给 oauthAuthByRepo', async () => {
+    const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'oauth-refresh-gitlab-push-'));
+    process.env.ONLINE_PROJECT_STATE_ROOT = stateRoot;
+    const layerId = 'oauth-refresh-gitlab-push-layer';
+    const layerDir = path.join(stateRoot, 'layers', layerId);
+    const repoDir = path.join(layerDir, 'somanyad');
+    fs.mkdirSync(repoDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(layerDir, 'layer_meta.json'),
+      JSON.stringify({ layer_id: layerId, kind: 'workspace' }),
+    );
+    assert.equal(spawnSync('git', ['init'], { cwd: repoDir, encoding: 'utf8' }).status, 0);
+    assert.equal(
+      spawnSync('git', [
+        'remote',
+        'add',
+        'origin',
+        'https://gitlab-tencent-sh-1.aidevpush.com/ljy124818167/somanyad.git',
+      ], { cwd: repoDir, encoding: 'utf8' }).status,
+      0,
+    );
+
+    const server = http.createServer((req, res) => {
+      if (req.method === 'POST' && req.url?.includes('layer-github-oauth-access-tokens')) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            ok: true,
+            github_auth_by_repo: { 'ljy124818167/somanyad': 'glpat-slug' },
+            git_auth_by_repo_match_key: {
+              'gitlab-tencent-sh-1.aidevpush.com/ljy124818167/somanyad': 'glpat-match',
+            },
+            pr_base_branch: 'master',
+            pr_title: 'auto_run',
+          }),
+        );
+        return;
+      }
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ detail: 'not found' }));
+    });
+
+    let pushOpts = null;
+    try {
+      await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+      const addr = server.address();
+      const base = `http://127.0.0.1:${addr.port}`;
+      process.env.TaskApiEndPoint = `${base}/api/tenant/t1/workspace/w1/task/task1/comment/cmt_1/cloud`;
+      process.env.ACCESS_TOKEN = 'container_access_token';
+      const mod = await import(`./layerGitOauthRefreshPush.mjs?gitlabpush=${Date.now()}`);
+      const { httpStatus } = await mod.runLayerOauthRefreshPush({
+        layerId,
+        targetBranch: 'feature/auto-run',
+        runLayerGithubOauthAccessPush: async (opts) => {
+          pushOpts = opts;
+          return { httpStatus: 200, payload: { ok: true } };
+        },
+      });
+      assert.equal(httpStatus, 200);
+      assert.equal(pushOpts?.oauthAuthByRepo?.['https://gitlab-tencent-sh-1.aidevpush.com/ljy124818167/somanyad']?.provider, 'gitlab');
+      assert.equal(
+        pushOpts?.oauthAuthByRepo?.['https://gitlab-tencent-sh-1.aidevpush.com/ljy124818167/somanyad']?.access_token,
+        'glpat-match',
+      );
+      assert.equal(pushOpts?.accessTokenByRepoSlug?.['ljy124818167/somanyad'], 'glpat-slug');
+      assert.equal(pushOpts?.prBaseBranch, 'master');
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+      fs.rmSync(stateRoot, { recursive: true, force: true });
+    }
+  });
 });

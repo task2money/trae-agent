@@ -1,6 +1,14 @@
 /**
  * 与任务详情前端 ``gitCloneRefMatchKey`` / Django ``repo_match_key_from_url`` 对齐。
  */
+
+/** origin URL 规范化：小写、去尾斜杠、去 .git，保留 scheme（供 oauth_auth_by_repo 键）。 */
+export function canonicalRepoKey(url) {
+  let s = String(url || '').trim().replace(/\/$/, '');
+  if (s.toLowerCase().endsWith('.git')) s = s.slice(0, -4);
+  return s.toLowerCase();
+}
+
 export function repoMatchKeyFromUrl(u) {
   const raw = String(u || '').trim();
   if (!raw) return '';

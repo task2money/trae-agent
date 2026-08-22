@@ -5,6 +5,7 @@ import { postJson, taskApiPrefix } from './saasTaskCloud.mjs';
 import { runLayerGithubOauthAccessPush } from './layerGitOauthPush.mjs';
 import { collectOauthRepoWriteTargets } from './layerGitOauthFetchTokenFiles.mjs';
 import { collectRepoBranchPlans } from './bootstrapWorkBranch.mjs';
+import { buildOauthAccessPushAuthFromTokenPayload, tokenPayloadHasPushAuth } from './layerGitOauthPushAuthMaps.mjs';
 import fs from 'fs';
 import path from 'path';
 import { logsDir } from './paths.mjs';
@@ -148,17 +149,8 @@ export async function runLayerOauthRefreshPush(opts) {
     };
   }
 
-  const authByKey =
-    tokenPayload && typeof tokenPayload.git_auth_by_repo_match_key === 'object'
-      ? tokenPayload.git_auth_by_repo_match_key
-      : null;
-  const githubAuthByRepo =
-    authByKey && Object.keys(authByKey).length
-      ? authByKey
-      : tokenPayload && typeof tokenPayload.github_auth_by_repo === 'object' && tokenPayload.github_auth_by_repo
-        ? tokenPayload.github_auth_by_repo
-        : null;
-  if (!githubAuthByRepo || !Object.keys(githubAuthByRepo).length) {
+  const pushAuth = buildOauthAccessPushAuthFromTokenPayload(tokenPayload, layerId);
+  if (!tokenPayloadHasPushAuth(pushAuth)) {
     const partial = tokenPayload?.partial_error || tokenPayload?.detail;
     appendOauthRefreshPushLog(
       `oauth-refresh-push fail layer_id=${layerId} detail=no github_auth_by_repo partial=${String(partial || '').slice(0, 240)}`,
@@ -175,14 +167,16 @@ export async function runLayerOauthRefreshPush(opts) {
     };
   }
   appendOauthRefreshPushLog(
-    `oauth-refresh-push token-ready layer_id=${layerId} token_repos=${Object.keys(githubAuthByRepo).length}`,
+    `oauth-refresh-push token-ready layer_id=${layerId} github_slugs=${Object.keys(pushAuth.accessTokenByRepoSlug).length} oauth_repos=${Object.keys(pushAuth.oauthAuthByRepo).length}`,
   );
 
+  const pushAccessFn = opts.runLayerGithubOauthAccessPush || runLayerGithubOauthAccessPush;
   try {
-    const result = await runLayerGithubOauthAccessPush({
+    const result = await pushAccessFn({
       layerId,
       targetBranch,
-      accessTokenByRepoSlug: githubAuthByRepo,
+      accessTokenByRepoSlug: pushAuth.accessTokenByRepoSlug,
+      oauthAuthByRepo: pushAuth.oauthAuthByRepo,
       prBaseBranch: String(tokenPayload?.pr_base_branch || '').trim(),
       prTitle: String(tokenPayload?.pr_title || '').trim(),
       prBody: String(tokenPayload?.pr_body || '').trim(),

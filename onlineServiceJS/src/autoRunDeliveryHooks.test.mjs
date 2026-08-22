@@ -132,6 +132,39 @@ test('triggerAutoRunDeliveryForJob edit_run forces delivery and backfills', asyn
   assert.equal(backfillOpts.priorAssistantResponse, 'edited output');
 });
 
+test('triggerAutoRunDeliveryForJob backfills delivery failure into mounted agent comment', async () => {
+  let backfillOpts = null;
+  const result = await triggerAutoRunDeliveryForJob(
+    {
+      layer_id: 'L-fail',
+      auto_run_first: true,
+      mounted_agent_comment_id: 'agent-fail',
+      output: 'job stdout',
+    },
+    {
+      lastBootstrapTaskDetail: {
+        task: { title: 'T', target_branch: 'feat/x', auto_run: true },
+        at_mention_run: { source: 'auto_run', agent_comment_id: 'agent-fail' },
+      },
+      runAutoRunDelivery: async () => ({
+        ok: false,
+        pushResult: {
+          httpStatus: 400,
+          payload: { ok: false, detail: '该仓库未找到可用的 OAuth access_token' },
+        },
+      }),
+      backfillAutoRunPrToAgentComment: async (opts) => {
+        backfillOpts = opts;
+        return { ok: true };
+      },
+    },
+  );
+  assert.equal(result.ok, false);
+  assert.equal(backfillOpts.failed, true);
+  assert.equal(backfillOpts.detail, '该仓库未找到可用的 OAuth access_token');
+  assert.equal(backfillOpts.agentCommentId, 'agent-fail');
+});
+
 test('retryPendingAutoRunDeliveries only retries unfinished auto_run_first completed jobs', async () => {
   const triggered = [];
   const out = await retryPendingAutoRunDeliveries({

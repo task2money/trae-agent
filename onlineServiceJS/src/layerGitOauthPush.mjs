@@ -18,6 +18,7 @@ import { workdirNeedsPush } from './layerGitCommit.mjs';
 import { appendGitPushReqLog } from './outboundReqLog.mjs';
 import { createGithubPullRequest, createGitlabMergeRequest } from './layerGitOauthPushPr.mjs';
 import { formatOauthMultiRepoPushDetail } from './layerGitOauthPushDetail.mjs';
+import { canonicalRepoKey, repoMatchKeyFromUrl } from './repoMatchKey.mjs';
 
 export { createGitlabMergeRequest } from './layerGitOauthPushPr.mjs';
 export { formatOauthMultiRepoPushDetail } from './layerGitOauthPushDetail.mjs';
@@ -67,16 +68,24 @@ function parseOwnerRepoFromPathUrl(url) {
  */
 function resolveOAuthPushRepoContext(originUrl, accessTokenByRepoSlug, oauthAuthByRepo) {
   const canonicalKey = canonicalRepoKey(originUrl);
-  const oauthEntry = oauthAuthByRepo[canonicalKey] || null;
+  const matchKey = repoMatchKeyFromUrl(originUrl);
+  const oauthEntry =
+    oauthAuthByRepo[canonicalKey] ||
+    (matchKey ? oauthAuthByRepo[matchKey] : null) ||
+    null;
   let slugInfo = parseGithubOwnerRepoFromRemoteUrl(originUrl);
   let gitlabInfo = parseGitlabOwnerRepoFromRemoteUrl(originUrl);
-  if (!slugInfo && !gitlabInfo && oauthEntry) {
+  if (!slugInfo && !gitlabInfo) {
     const pathSlug = parseOwnerRepoFromPathUrl(originUrl);
-    const provider = String(oauthEntry.provider || '').trim().toLowerCase();
+    const provider = String(oauthEntry?.provider || '').trim().toLowerCase();
+    const pathSlugKey = pathSlug ? String(pathSlug.slug).toLowerCase() : '';
+    const hasSlugToken = Boolean(pathSlugKey && accessTokenByRepoSlug[pathSlugKey]);
     if (provider === 'gitlab' && pathSlug) {
       gitlabInfo = pathSlug;
     } else if (provider === 'github') {
       slugInfo = slugInfo || pathSlug || parseGithubOwnerRepoFromRemoteUrl(originUrl);
+    } else if (pathSlug && (/gitlab/i.test(String(originUrl || '')) || hasSlugToken)) {
+      gitlabInfo = pathSlug;
     }
   }
   if (!slugInfo && !gitlabInfo) {
@@ -85,10 +94,13 @@ function resolveOAuthPushRepoContext(originUrl, accessTokenByRepoSlug, oauthAuth
   const provider = slugInfo ? 'github' : 'gitlab';
   const slug = slugInfo ? slugInfo.slug : gitlabInfo.slug;
   const httpsRemote = slugInfo ? githubHttpsRemoteFromSlug(slugInfo.owner, slugInfo.repo) : originUrl;
+  const slugKey = String(slug || '').toLowerCase();
   const repoToken =
-    provider === 'github'
-      ? accessTokenByRepoSlug[String(slug || '').toLowerCase()] || oauthEntry?.accessToken || ''
-      : oauthEntry?.accessToken || '';
+    oauthEntry?.accessToken ||
+    accessTokenByRepoSlug[slugKey] ||
+    (matchKey ? accessTokenByRepoSlug[matchKey] : '') ||
+    accessTokenByRepoSlug[canonicalKey] ||
+    '';
   return {
     skip: false,
     canonicalKey,
@@ -106,12 +118,6 @@ const GIT_PUSH_TIMEOUT_MS = Math.max(
   5000,
   Number.parseInt(String(process.env.GIT_PUSH_TIMEOUT_MS || '90000'), 10) || 90000,
 );
-
-function canonicalRepoKey(url) {
-  let s = String(url || '').trim().replace(/\/$/, '');
-  if (s.toLowerCase().endsWith('.git')) s = s.slice(0, -4);
-  return s.toLowerCase();
-}
 
 function gitConfigGetRemoteOrigin(workdir) {
   try {

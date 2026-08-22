@@ -67,6 +67,57 @@ test('runLayerGithubOauthAccessPush: localhost GitLab + oauth_auth_by_repo 应�
   fs.rmSync(stateRoot, { recursive: true, force: true });
 });
 
+test('runLayerGithubOauthAccessPush: GitLab 仅 github slug token 也应尝试推送', async () => {
+  const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'oauth-push-gitlab-slug-'));
+  process.env.ONLINE_PROJECT_STATE_ROOT = stateRoot;
+  const layerId = 'oauth-push-gitlab-slug-layer';
+  const layerDir = path.join(stateRoot, 'layers', layerId);
+  const repoDir = path.join(layerDir, 'somanyad');
+  fs.mkdirSync(repoDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(layerDir, 'layer_meta.json'),
+    JSON.stringify({ layer_id: layerId, kind: 'workspace' }),
+  );
+  assert.equal(spawnSync('git', ['init'], { cwd: repoDir, encoding: 'utf8' }).status, 0);
+  assert.equal(
+    spawnSync('git', ['remote', 'add', 'origin', 'https://gitlab-tencent-sh-1.aidevpush.com/ljy124818167/somanyad.git'], {
+      cwd: repoDir,
+      encoding: 'utf8',
+    }).status,
+    0,
+  );
+  assert.equal(
+    spawnSync('git', ['config', 'user.email', 'e2e@test'], { cwd: repoDir, encoding: 'utf8' }).status,
+    0,
+  );
+  assert.equal(
+    spawnSync('git', ['config', 'user.name', 'e2e'], { cwd: repoDir, encoding: 'utf8' }).status,
+    0,
+  );
+  fs.writeFileSync(path.join(repoDir, 'hello.js'), "console.log('hello world')\n");
+  assert.equal(spawnSync('git', ['add', 'hello.js'], { cwd: repoDir, encoding: 'utf8' }).status, 0);
+  assert.equal(
+    spawnSync('git', ['commit', '-m', 'e2e push'], { cwd: repoDir, encoding: 'utf8' }).status,
+    0,
+  );
+
+  const { runLayerGithubOauthAccessPush } = await import('./layerGitOauthPush.mjs');
+  const { payload } = await runLayerGithubOauthAccessPush({
+    layerId,
+    targetBranch: 'feature/e2e-gitlab-slug',
+    accessTokenByRepoSlug: { 'ljy124818167/somanyad': 'glpat-slug-only' },
+    gitExecAsync: async () => {
+      throw new Error('fatal: Authentication failed for gitlab');
+    },
+  });
+  const repos = payload?.github_oauth_multirepo?.repos;
+  assert.ok(Array.isArray(repos) && repos.length === 1, '应处理 1 个 git 根目录');
+  assert.notEqual(repos[0].detail, '该仓库未找到可用的 OAuth access_token');
+  assert.match(String(repos[0].detail || ''), /Authentication failed|fatal/i);
+
+  fs.rmSync(stateRoot, { recursive: true, force: true });
+});
+
 test('runLayerGithubOauthAccessPush: 多仓部分成功（一仓 push_ok、一仓 skip）不得整体 200', async () => {
   const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'oauth-push-multi-'));
   process.env.ONLINE_PROJECT_STATE_ROOT = stateRoot;

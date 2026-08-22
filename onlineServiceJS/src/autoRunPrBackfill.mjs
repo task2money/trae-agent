@@ -46,6 +46,12 @@ export function composeAutoRunPrBackfillReply(opts = {}) {
   if (urls.length > 1) {
     return `${head}，Pull Requests：\n${urls.map((u, i) => `${i + 1}. ${u}`).join('\n')}`;
   }
+  if (opts.failed) {
+    const failDetail = String(opts.detail || '').trim();
+    return failDetail
+      ? `${headDelivery}失败：${failDetail.slice(0, 400)}`
+      : `${headDelivery}失败。`;
+  }
   if (opts.skippedClean) {
     return `${head}：工作区干净，无需推送或创建 PR。`;
   }
@@ -148,6 +154,8 @@ export async function backfillAutoRunPrToAgentComment(opts = {}) {
     urls,
     skippedClean: Boolean(opts?.skippedClean),
     kind: opts?.kind,
+    failed: Boolean(opts?.failed),
+    detail: opts?.detail,
   });
   const prior = String(opts?.priorAssistantResponse || '').trim();
   const text = prior ? `${prior}\n\n${prText}` : prText;

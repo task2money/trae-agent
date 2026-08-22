@@ -57,41 +57,42 @@ export async function triggerAutoRunDeliveryForJob(rec, deps = {}) {
       /* 层图同步失败不阻断交付结果 */
     }
   }
-  if (result?.ok) {
-    if (isEditRun) {
-      const ensureFn = deps.ensureEditRunMountedAgentComment || ensureEditRunMountedAgentComment;
-      try {
-        await ensureFn(rec, {
-          persistMount: (agentId) => {
-            if (typeof deps.persistJobMount === 'function') {
-              deps.persistJobMount(rec, agentId);
-            }
-          },
-        });
-      } catch (e) {
-        result.agent_ensure = { ok: false, detail: String(e?.message || e).slice(0, 400) };
-      }
+  if (result?.ok && isEditRun) {
+    const ensureFn = deps.ensureEditRunMountedAgentComment || ensureEditRunMountedAgentComment;
+    try {
+      await ensureFn(rec, {
+        persistMount: (agentId) => {
+          if (typeof deps.persistJobMount === 'function') {
+            deps.persistJobMount(rec, agentId);
+          }
+        },
+      });
+    } catch (e) {
+      result.agent_ensure = { ok: false, detail: String(e?.message || e).slice(0, 400) };
     }
-    const agentCommentId =
-      String(rec?.mounted_agent_comment_id || '').trim() ||
-      String(detail?.at_mention_run?.agent_comment_id || '').trim();
-    const source = String(detail?.at_mention_run?.source || '').trim().toLowerCase();
-    const shouldBackfill =
-      Boolean(agentCommentId) &&
-      (source === 'auto_run' || Boolean(rec?.auto_run_first) || isEditRun);
-    if (shouldBackfill) {
-      const backfillFn = deps.backfillAutoRunPrToAgentComment || backfillAutoRunPrToAgentComment;
-      try {
-        result.pr_backfill = await backfillFn({
-          agentCommentId,
-          pushResult: result.pushResult,
-          skippedClean: Boolean(result.skipped_clean),
-          priorAssistantResponse: String(rec?.output || '').trim(),
-          kind: isEditRun ? 'edit_run' : 'auto_run',
-        });
-      } catch (e) {
-        result.pr_backfill = { ok: false, detail: String(e?.message || e).slice(0, 400) };
-      }
+  }
+  const agentCommentId =
+    String(rec?.mounted_agent_comment_id || '').trim() ||
+    String(detail?.at_mention_run?.agent_comment_id || '').trim();
+  const source = String(detail?.at_mention_run?.source || '').trim().toLowerCase();
+  const shouldBackfill =
+    Boolean(agentCommentId) &&
+    (source === 'auto_run' || Boolean(rec?.auto_run_first) || isEditRun);
+  const skippedOk = Boolean(result?.skipped && result?.ok);
+  if (shouldBackfill && !skippedOk) {
+    const backfillFn = deps.backfillAutoRunPrToAgentComment || backfillAutoRunPrToAgentComment;
+    try {
+      result.pr_backfill = await backfillFn({
+        agentCommentId,
+        pushResult: result.pushResult,
+        skippedClean: Boolean(result.skipped_clean),
+        priorAssistantResponse: String(rec?.output || '').trim(),
+        kind: isEditRun ? 'edit_run' : 'auto_run',
+        failed: !result?.ok,
+        detail: String(result?.pushResult?.payload?.detail || result?.detail || '').trim(),
+      });
+    } catch (e) {
+      result.pr_backfill = { ok: false, detail: String(e?.message || e).slice(0, 400) };
     }
   }
   return result;
