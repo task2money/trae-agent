@@ -24,6 +24,8 @@ import {
 } from './jobsRuntimeState.mjs';
 import { recordJobEvent } from './saasJobStreamPush.mjs';
 import { runJobAsync as runJobAsyncImpl } from './jobsRuntimeRunJob.mjs';
+import { preemptForNewInstruction } from './instructionIdle.mjs';
+import { postContainerHeartbeatToSaas } from './saasTaskCloud.mjs';
 import {
   buildLayersSnapshot,
   mirrorLayerGraphToTaskCloudSSE,
@@ -121,6 +123,12 @@ export async function createJob(body) {
   if (command_kind === 'trae' && !fs.existsSync(configFilePath())) {
     throw new Error(`Config missing: ${configFilePath()}`);
   }
+
+  preemptForNewInstruction({
+    jobs,
+    interruptFn: interruptJob,
+    heartbeatFn: (idle) => postContainerHeartbeatToSaas('', { instruction_idle: idle }),
+  });
 
   let stackParent;
   let prior_context_job_id = '';

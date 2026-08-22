@@ -9,6 +9,8 @@ import {
   failMountedAgentComment,
 } from './mountedAgentCommentStream.mjs';
 import { finalizeJobCloseSideEffects } from './jobsRuntimeCloseSideEffects.mjs';
+import { maybeStartIdleAfterJob } from './instructionIdle.mjs';
+import { postContainerHeartbeatToSaas, postRequestMachineRelease } from './saasTaskCloud.mjs';
 import { jobLogsTaeJsonDir, jobLogsTaeJsonPath, layerArtifactsDir } from './paths.mjs';
 import { broadcast } from './sseHub.mjs';
 import { resetExecStream, appendExecStream, completeExecStream } from './execStream.mjs';
@@ -154,7 +156,7 @@ export function runJobAsync(rec, workDir, deps) {
         }
       }
       // 交付不得依赖 mountedAgentId：普通 auto_run / edit_run 常无预挂载评论
-      await finalizeJobCloseSideEffects({
+      const closeResult = await finalizeJobCloseSideEffects({
         wasInterrupted,
         mountedAgentId,
         rec,
@@ -162,6 +164,11 @@ export function runJobAsync(rec, workDir, deps) {
         completeMountedAgentComment,
         failMountedAgentComment,
         triggerAutoRunDeliveryForJobAndMirror,
+      });
+      maybeStartIdleAfterJob({
+        idleEligible: Boolean(closeResult?.idleEligible),
+        heartbeatFn: (idle) => postContainerHeartbeatToSaas('', { instruction_idle: idle }),
+        releaseFn: postRequestMachineRelease,
       });
     })();
   });

@@ -1,4 +1,5 @@
 import { postJson } from './saasTaskCloud.mjs';
+import { applyIdlePolicyFromTaskDetail } from './instructionIdle.mjs';
 import { collectRepoBranchPlans } from './bootstrapWorkBranch.mjs';
 import { collectRepoCloneJobs } from './bootstrapRepoCredentials.mjs';
 import { emitRuntimeEvent } from './runtimeEventLog.mjs';
@@ -120,6 +121,7 @@ export async function fetchBootstrapRepoInputs(prefix, accessToken, timeoutSec) 
     { access_token: accessToken },
     timeoutSec
   );
+  applyIdlePolicyFromTaskDetail(detail);
   const cloneJobs = collectRepoCloneJobs(detail, {
     onSkippedNested: (count) => {
       // 用户可见启动日志：关闭 auto_clone_nested_repos 时让「跳过子仓」成为正向证据（OPT-20260815-020）

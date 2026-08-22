@@ -49,6 +49,7 @@ test('interrupted job skips delivery even with auto_run_first', async () => {
   });
   assert.equal(out.deliveryTriggered, false);
   assert.equal(out.reason, 'interrupted');
+  assert.equal(out.idleEligible, false);
   assert.equal(delivered, false);
 });
 
@@ -90,4 +91,43 @@ test('failed job with mount fails agent but does not deliver', async () => {
   assert.equal(out.deliveryTriggered, false);
   assert.equal(calls.length, 1);
   assert.equal(calls[0][0], 'fail');
+});
+
+test('delivery throw is not idle eligible', async () => {
+  const out = await finalizeJobCloseSideEffects({
+    wasInterrupted: false,
+    mountedAgentId: '',
+    rec: { status: 'completed', auto_run_first: true },
+    exitCode: 0,
+    triggerAutoRunDeliveryForJobAndMirror: async () => {
+      throw new Error('push failed');
+    },
+  });
+  assert.equal(out.deliveryTriggered, false);
+  assert.equal(out.idleEligible, false);
+  assert.equal(out.reason, 'delivery_threw');
+});
+
+test('ordinary completed job is idle eligible', async () => {
+  const out = await finalizeJobCloseSideEffects({
+    wasInterrupted: false,
+    mountedAgentId: '',
+    rec: { status: 'completed' },
+    exitCode: 0,
+  });
+  assert.equal(out.idleEligible, true);
+});
+
+test('mounted complete throw is not idle eligible', async () => {
+  const out = await finalizeJobCloseSideEffects({
+    wasInterrupted: false,
+    mountedAgentId: 'cmt_agent_1',
+    rec: { status: 'completed', output: 'hello' },
+    exitCode: 0,
+    completeMountedAgentComment: async () => {
+      throw new Error('comment 502');
+    },
+  });
+  assert.equal(out.idleEligible, false);
+  assert.equal(out.reason, 'mounted_complete_failed');
 });

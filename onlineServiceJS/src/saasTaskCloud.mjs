@@ -122,7 +122,7 @@ export function resetContainerHeartbeatSeqState() {
   lastSaasHeartbeatSeq = 0;
 }
 
-export async function postContainerHeartbeatToSaas(message) {
+export async function postContainerHeartbeatToSaas(message, extra = {}) {
   let cloudPrefix;
   try {
     cloudPrefix = taskApiPrefix();
@@ -139,6 +139,9 @@ export async function postContainerHeartbeatToSaas(message) {
   }
   const msg = typeof message === 'string' ? message.trim() : '';
   if (msg) body.message = msg.slice(0, 500);
+  if (extra && Object.prototype.hasOwnProperty.call(extra, 'instruction_idle')) {
+    body.instruction_idle = Boolean(extra.instruction_idle);
+  }
   try {
     const data = await postJson(url, body, 14, { reqLogFile: HEARTBEAT_REQ_LOG_FILE });
     // SaaS 全局中间件会把 JSON 数字转成字符串；须兼容 number / numeric string
