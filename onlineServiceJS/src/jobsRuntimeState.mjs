@@ -140,6 +140,18 @@ export function jobToApiDict(rec, opts = {}) {
   return base;
 }
 
+/**
+ * 终态首次写入 finished_at。已有值不覆盖（中断时刻优先于进程 close）。
+ * @param {object|null|undefined} rec
+ * @param {(() => string)|string} [now]
+ */
+export function stampJobFinishedAt(rec, now = () => new Date().toISOString()) {
+  if (!rec || typeof rec !== 'object') return rec;
+  if (rec.finished_at) return rec;
+  rec.finished_at = typeof now === 'function' ? now() : String(now || '');
+  return rec;
+}
+
 export function listJobs() {
   return [...jobs.values()].sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
 }

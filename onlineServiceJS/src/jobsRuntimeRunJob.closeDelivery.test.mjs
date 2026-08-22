@@ -58,6 +58,8 @@ test('runJobAsync close triggers delivery even without mounted agent', async () 
   await flush();
 
   assert.equal(rec.status, 'completed', 'exit 0 should mark completed');
+  assert.equal(typeof rec.finished_at, 'string');
+  assert.ok(/^\d{4}-\d{2}-\d{2}T/.test(rec.finished_at), 'finished_at must be ISO');
   assert.equal(deliveryCalls, 1, 'delivery must trigger with no mounted agent');
   assert.equal(deliveredRec, rec, 'delivery receives the job rec');
   assert.deepEqual(drainCalls, [['layer1', 'job_delivery1']], 'drain queued should run');
@@ -84,11 +86,13 @@ test('runJobAsync interrupted close does not deliver', async () => {
   });
 
   rec.status = 'interrupted';
+  rec.finished_at = '2026-08-22T10:00:00.000Z';
   proc.emit('close', 1);
   await flush();
 
   assert.equal(deliveryCalls, 0, 'interrupted must not deliver');
   assert.equal(rec.status, 'interrupted');
+  assert.equal(rec.finished_at, '2026-08-22T10:00:00.000Z', 'close must not overwrite interrupt time');
 });
 
 test('runJobAsync close on non-delivery-eligible job does not deliver', async () => {
@@ -116,4 +120,30 @@ test('runJobAsync close on non-delivery-eligible job does not deliver', async ()
 
   assert.equal(deliveryCalls, 0, 'plain job must not deliver');
   assert.equal(rec.status, 'completed');
+  assert.equal(typeof rec.finished_at, 'string');
+  assert.ok(/^\d{4}-\d{2}-\d{2}T/.test(rec.finished_at));
+});
+
+test('runJobAsync error stamps finished_at', async () => {
+  const proc = makeFakeProc();
+  const rec = {
+    id: 'job_err1',
+    layer_id: 'layer1',
+    command_kind: 'shell',
+    command: 'echo hi',
+    status: 'running',
+    output: '',
+  };
+  runJobAsync(rec, '/tmp', {
+    drainQueuedJobsForLayer: () => {},
+    triggerAutoRunDeliveryForJobAndMirror: async () => {},
+    spawn: () => proc,
+  });
+
+  proc.emit('error', new Error('spawn failed'));
+  await flush();
+
+  assert.equal(rec.status, 'failed');
+  assert.equal(typeof rec.finished_at, 'string');
+  assert.ok(/^\d{4}-\d{2}-\d{2}T/.test(rec.finished_at));
 });

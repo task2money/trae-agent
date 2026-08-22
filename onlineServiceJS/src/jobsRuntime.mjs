@@ -21,6 +21,7 @@ import {
   saveState,
   newJobId,
   removeLayerQueue,
+  stampJobFinishedAt,
 } from './jobsRuntimeState.mjs';
 import { recordJobEvent } from './saasJobStreamPush.mjs';
 import { runJobAsync as runJobAsyncImpl } from './jobsRuntimeRunJob.mjs';
@@ -38,6 +39,7 @@ export {
   listJobs,
   getJob,
   removeLayerQueue,
+  stampJobFinishedAt,
 } from './jobsRuntimeState.mjs';
 
 export {
@@ -322,7 +324,10 @@ export function interruptJob(jobId) {
   if (proc && !proc.killed) {
     proc.kill('SIGTERM');
   }
-  if (rec.status === 'running') rec.status = 'interrupted';
+  if (rec.status === 'running') {
+    rec.status = 'interrupted';
+    stampJobFinishedAt(rec);
+  }
   saveState();
   void mirrorLayerGraphToTaskCloudSSE().catch(() => {});
   return rec;

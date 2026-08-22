@@ -15,7 +15,7 @@ import { jobLogsTaeJsonDir, jobLogsTaeJsonPath, layerArtifactsDir } from './path
 import { broadcast } from './sseHub.mjs';
 import { resetExecStream, appendExecStream, completeExecStream } from './execStream.mjs';
 import { startAgentStepPoller } from './jobStepEvents.mjs';
-import { getRunningMap, saveState } from './jobsRuntimeState.mjs';
+import { getRunningMap, saveState, stampJobFinishedAt } from './jobsRuntimeState.mjs';
 import { recordJobEvent } from './saasJobStreamPush.mjs';
 import { buildTraeCmd, loadPriorTrajectoryContextPrefix } from './jobsRuntimeTrae.mjs';
 import { mirrorLayerGraphToTaskCloudSSE } from './jobsRuntimeSnapshot.mjs';
@@ -138,6 +138,7 @@ export function runJobAsync(rec, workDir, deps) {
     if (!wasInterrupted) {
       rec.status = code === 0 ? 'completed' : 'failed';
     }
+    stampJobFinishedAt(rec);
     completeExecStream('job', rec.id);
     saveState();
     broadcast({ type: 'job_finished', job_id: rec.id, status: rec.status, exit_code: code });
@@ -180,6 +181,7 @@ export function runJobAsync(rec, workDir, deps) {
     }
     running.delete(rec.id);
     rec.status = 'failed';
+    stampJobFinishedAt(rec);
     rec.exit_code = -1;
     rec.output = (rec.output || '') + `\n[error] ${e.message}\n`;
     appendExecStream('job', rec.id, `\n[error] ${e.message}\n`);
