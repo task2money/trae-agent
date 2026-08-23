@@ -17,6 +17,7 @@ import { resetExecStream, appendExecStream, completeExecStream } from './execStr
 import { startAgentStepPoller } from './jobStepEvents.mjs';
 import { getRunningMap, saveState, stampJobFinishedAt } from './jobsRuntimeState.mjs';
 import { recordJobEvent } from './saasJobStreamPush.mjs';
+import { archiveJobStepFullToSaas } from './saasStepFullArchive.mjs';
 import { buildTraeCmd, loadPriorTrajectoryContextPrefix } from './jobsRuntimeTrae.mjs';
 import { mirrorLayerGraphToTaskCloudSSE } from './jobsRuntimeSnapshot.mjs';
 
@@ -149,6 +150,11 @@ export function runJobAsync(rec, workDir, deps) {
       void drainQueuedJobsForLayer(rec.layer_id, rec.id);
     }
     void (async () => {
+      try {
+        await archiveJobStepFullToSaas(rec);
+      } catch {
+        /* ignore */
+      }
       if (agentChunkBuf) {
         try {
           await agentChunkBuf.flush();

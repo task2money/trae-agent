@@ -66,6 +66,33 @@ export function listAgentStepsFromTaeJsonDir(taeRoot) {
 }
 
 /**
+ * @param {string} taeRoot
+ * @returns {object[]} full agent_step_full.json documents (or agent_step.json fallback)
+ */
+export function listAgentStepFullDocsFromTaeJsonDir(taeRoot) {
+  const root = String(taeRoot || '').trim();
+  if (!root || !fs.existsSync(root)) return [];
+  const dirs = [];
+  for (const name of fs.readdirSync(root)) {
+    const m = name.match(STEP_DIR_RE);
+    if (!m) continue;
+    dirs.push({ num: parseInt(m[1], 10), dir: path.join(root, name) });
+  }
+  dirs.sort((a, b) => a.num - b.num);
+  const out = [];
+  for (const { num, dir } of dirs) {
+    let fullPath = path.join(dir, 'agent_step_full.json');
+    if (!fs.existsSync(fullPath)) fullPath = path.join(dir, 'agent_step.json');
+    if (!fs.existsSync(fullPath)) continue;
+    const doc = safeReadJson(fullPath);
+    if (!doc || typeof doc !== 'object') continue;
+    if (doc.step_number == null) doc.step_number = num;
+    out.push(doc);
+  }
+  return out;
+}
+
+/**
  * Merge trajectory + tae_json steps; prefer higher step_number coverage.
  * @param {string} trajPath
  * @param {string} taeRoot
