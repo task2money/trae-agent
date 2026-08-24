@@ -44,6 +44,7 @@ import {
 } from './layerFs.mjs';
 import { appendOutboundReqLog } from './outboundReqLog.mjs';
 import { buildGitCloneArgs } from './gitCloneHelpers.mjs';
+import { runRecloneSuccessSideEffects } from './postBootstrapAgentKickoff.mjs';
 
 
 export function registerReposCloneRoutes(api) {
@@ -348,12 +349,13 @@ export function registerReposCloneRoutes(api) {
           } catch {
             /* ignore */
           }
-          // 重新克隆完成后自动同步 Git 身份配置（与全量 bootstrap clone 行为一致）
-          try {
-            await applyBootstrapCloneGitIdentities();
-          } catch {
-            /* ignore — identity sync is best-effort */
-          }
+          // 身份同步 + 恢复被中断的自动任务（与凭证恢复成功路径同 kickoff）
+          await runRecloneSuccessSideEffects({
+            layerId,
+            repoUrl,
+            detail: lastBootstrapTaskDetail,
+            applyIdentities: applyBootstrapCloneGitIdentities,
+          });
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
           try {

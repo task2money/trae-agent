@@ -14,7 +14,8 @@ import {
   lastBootstrapTaskDetail,
 } from './bootstrap.mjs';
 import { detailHasAtMentionRun } from './atMentionOrchestration.mjs';
-import { runPostBootstrapAgentKickoff } from './postBootstrapAgentKickoff.mjs';
+import { maybeRunPostBootstrapAgentKickoff } from './postBootstrapAgentKickoff.mjs';
+import { anyLayerHasGitRepo } from './layerFs.mjs';
 import { registerReachabilityAfterBootstrap } from './reachability.mjs';
 import {
   startSaasContainerHeartbeatLoop,
@@ -245,11 +246,13 @@ export async function main({
       if (strict) process.exit(1);
     }
     try {
-      // at_mention（合法 ContextPack）优先，否则 auto_run；与凭证恢复成功路径共用
-      await runPostBootstrapAgentKickoff({
+      // 克隆全失败则推迟；有 git 后 at_mention 优先否则 auto_run。reclone 成功路径补跑。
+      await maybeRunPostBootstrapAgentKickoff({
         detail: lastBootstrapTaskDetail,
         layerId: bootstrapCloneLayerId,
         createJobFn: createJob,
+        cloneAttempted: Boolean(bootstrapRegisterCloneJob),
+        hasGit: anyLayerHasGitRepo(),
       });
     } catch (e) {
       const label = detailHasAtMentionRun(lastBootstrapTaskDetail)

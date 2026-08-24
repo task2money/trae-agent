@@ -6,7 +6,11 @@ import test from 'node:test';
 
 import {
   defaultFetchCommentContent,
+  maybeRunPostBootstrapAgentKickoff,
+  resumeAgentKickoffAfterCloneReady,
   runPostBootstrapAgentKickoff,
+  runRecloneSuccessSideEffects,
+  shouldDeferAgentKickoff,
 } from './postBootstrapAgentKickoff.mjs';
 
 function tmpState() {
@@ -274,6 +278,138 @@ test('defaultFetchCommentContent falls back to comments array by id', async () =
     if (prev === undefined) delete process.env.ACCESS_TOKEN;
     else process.env.ACCESS_TOKEN = prev;
   }
+});
+
+test('shouldDeferAgentKickoff when clone attempted but no git (T1)', () => {
+  assert.equal(shouldDeferAgentKickoff({ cloneAttempted: true, hasGit: false }), true);
+});
+
+test('shouldDeferAgentKickoff false when clone succeeded with git (T2)', () => {
+  assert.equal(shouldDeferAgentKickoff({ cloneAttempted: true, hasGit: true }), false);
+});
+
+test('shouldDeferAgentKickoff false when no clone was attempted (T3)', () => {
+  assert.equal(shouldDeferAgentKickoff({ cloneAttempted: false, hasGit: false }), false);
+});
+
+test('maybeRunPostBootstrapAgentKickoff skips createJob when clone failed (T1)', async () => {
+  tmpState();
+  let called = 0;
+  const out = await maybeRunPostBootstrapAgentKickoff({
+    detail: { task: { auto_run: true, title: 'T', description: 'D' } },
+    layerId: 'layer_defer',
+    cloneAttempted: true,
+    hasGit: false,
+    createJobFn: async () => {
+      called += 1;
+      return { id: 'should_not' };
+    },
+  });
+  assert.equal(out.deferred, true);
+  assert.equal(out.kind, null);
+  assert.equal(called, 0);
+});
+
+test('maybeRunPostBootstrapAgentKickoff starts auto_run when git present (T2)', async () => {
+  tmpState();
+  const calls = [];
+  const out = await maybeRunPostBootstrapAgentKickoff({
+    detail: { task: { auto_run: true, title: 'T', description: 'D' } },
+    layerId: 'layer_ok',
+    cloneAttempted: true,
+    hasGit: true,
+    createJobFn: async (body) => {
+      calls.push(body);
+      return { id: 'job_ok', layer_id: 'layer_ok' };
+    },
+  });
+  assert.equal(out.deferred, false);
+  assert.equal(out.kind, 'auto_run');
+  assert.equal(calls.length, 1);
+});
+
+test('resumeAgentKickoffAfterCloneReady starts auto_run after reclone (T4)', async () => {
+  tmpState();
+  const calls = [];
+  const out = await resumeAgentKickoffAfterCloneReady({
+    detail: { task: { auto_run: true, title: 'Resume', description: 'after clone' } },
+    layerId: 'layer_reclone',
+    reason: 'reclone',
+    repoUrl: 'https://example.com/org/repo.git',
+    createJobFn: async (body) => {
+      calls.push(body);
+      return { id: 'job_resume', layer_id: 'layer_reclone' };
+    },
+  });
+  assert.equal(out.kind, 'auto_run');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].auto_run_first, true);
+});
+
+test('runRecloneSuccessSideEffects still kickoffs when identity sync fails (T5)', async () => {
+  tmpState();
+  let kickoffCalls = 0;
+  await runRecloneSuccessSideEffects({
+    layerId: 'layer_id_fail',
+    repoUrl: 'https://example.com/a.git',
+    detail: { task: { auto_run: true, title: 'X', description: 'Y' } },
+    applyIdentities: async () => {
+      throw new Error('identity boom');
+    },
+    kickoff: async () => {
+      kickoffCalls += 1;
+      return { kind: 'auto_run', rec: { id: 'j1' } };
+    },
+  });
+  assert.equal(kickoffCalls, 1);
+});
+
+test('runRecloneSuccessSideEffects swallows kickoff errors (T6)', async () => {
+  tmpState();
+  await runRecloneSuccessSideEffects({
+    layerId: 'layer_k',
+    repoUrl: 'https://example.com/a.git',
+    detail: {},
+    applyIdentities: async () => {},
+    kickoff: async () => {
+      throw new Error('kickoff boom');
+    },
+    log: { error() {} },
+  });
+});
+
+test('resumeAgentKickoffAfterCloneReady is idempotent when marker exists (T7)', async () => {
+  tmpState();
+  const calls = [];
+  const createJobFn = async (body) => {
+    calls.push(body);
+    return { id: `job_${calls.length}`, layer_id: 'layer_idemp' };
+  };
+  const detail = { task: { auto_run: true, title: 'Once', description: 'Only' } };
+  await resumeAgentKickoffAfterCloneReady({
+    detail,
+    layerId: 'layer_idemp',
+    reason: 'reclone',
+    createJobFn,
+  });
+  const again = await resumeAgentKickoffAfterCloneReady({
+    detail,
+    layerId: 'layer_idemp',
+    reason: 'reclone',
+    createJobFn,
+  });
+  assert.equal(calls.length, 1);
+  assert.equal(again.kind, null);
+  assert.equal(again.rec, null);
+});
+
+test('server and reclone routes wire kickoff defer/resume (T8)', () => {
+  const here = path.dirname(new URL(import.meta.url).pathname);
+  const serverSrc = fs.readFileSync(path.join(here, 'server.mjs'), 'utf8');
+  const recloneSrc = fs.readFileSync(path.join(here, 'routesReposClone.mjs'), 'utf8');
+  assert.match(serverSrc, /maybeRunPostBootstrapAgentKickoff/);
+  assert.match(serverSrc, /anyLayerHasGitRepo/);
+  assert.match(recloneSrc, /runRecloneSuccessSideEffects/);
 });
 
 test('defaultFetchCommentContent returns empty when fetch fails', async () => {

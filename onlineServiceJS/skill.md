@@ -121,11 +121,11 @@ Dockerfile 基于 **ubuntu:24.04**（可通过构建参数 `BASE_IMAGE` / 环境
 - **`ephemeral_ssh_private_key`**（可选）：单次请求 PEM/OpenSSH 私钥文本。仅当内容**同时**含 `-----BEGIN…PRIVATE KEY-----` 与 `-----END…KEY-----` 时才视为有效；**否则忽略**（避免 UI/localStorage 残留非 PEM 文本时误把公开 HTTPS 转成 `git@` 导致克隆失败）。有效时行为同前（临时文件、`GIT_SSH_COMMAND`、HTTPS 可转 SSH）。
 - **`branch` / `depth`**：传入时分别对应 `git clone --branch`、`--depth`（正整数）；不传则由 `git` 默认行为决定。
 - **`parent_layer_id`**（可选）：写入新层 `layer_meta.json` 的父指针。
-- 容器引导多仓克隆（`task_api_bootstrap`）逻辑在 `src/bootstrap.mjs`；持有 PEM 时使用临时密钥与 `GIT_SSH_COMMAND`（细节以代码为准）。**nested 子仓**（`git_repo_entries[].parent_repo_url`）先克隆到 `.bootstrap-staging/`，成功后再移入 `{父仓目录}/{clone_alias path}`。克隆成功后按 task-detail 的 `target_branch` / `repo_branch_plans` 将各仓切换到工作分支（`bootstrapWorkBranch.mjs`）。**单仓/多仓克隆失败不阻断引导**：记录失败并继续 feature-params / `BOOTSTRAP_COMPLETE`，业务端点保持就绪；失败仓可 `POST /api/repos/reclone`。
+- 容器引导多仓克隆（`task_api_bootstrap`）逻辑在 `src/bootstrap.mjs`；持有 PEM 时使用临时密钥与 `GIT_SSH_COMMAND`（细节以代码为准）。**nested 子仓**（`git_repo_entries[].parent_repo_url`）先克隆到 `.bootstrap-staging/`，成功后再移入 `{父仓目录}/{clone_alias path}`。克隆成功后按 task-detail 的 `target_branch` / `repo_branch_plans` 将各仓切换到工作分支（`bootstrapWorkBranch.mjs`）。**单仓/多仓克隆失败不阻断引导**：记录失败并继续 feature-params / `BOOTSTRAP_COMPLETE`，业务端点保持就绪；失败仓可 `POST /api/repos/reclone`。克隆全失败时 **推迟** Agent 首指令（`AGENT_KICKOFF_DEFERRED`）；reclone 成功后视为中断任务复原并 kickoff（`AGENT_KICKOFF_RESUME`）。
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| `POST` | `/api/repos/reclone` | JSON：`repo_url`（必填）、`clone_alias` / `parent_repo_url`（可选，子仓）、`ephemeral_ssh_private_key`（可选）。在引导层（或首个含 git 的层）内先 staging `git clone`，成功后再移入目标路径（子仓为 `{父仓目录}/{alias path}`）。SSH URL 在有 OAuth 凭证时规范为 `https_clone_url` 再 HTTPS 克隆（与 bootstrap 一致）。 |
+| `POST` | `/api/repos/reclone` | JSON：`repo_url`（必填）、`clone_alias` / `parent_repo_url`（可选，子仓）、`ephemeral_ssh_private_key`（可选）。在引导层（或首个含 git 的层）内先 staging `git clone`，成功后再移入目标路径（子仓为 `{父仓目录}/{alias path}`）。SSH URL 在有 OAuth 凭证时规范为 `https_clone_url` 再 HTTPS 克隆（与 bootstrap 一致）。**成功后**同步 Git 身份并恢复被中断的 Agent 首指令（与凭证恢复 kickoff 同路径）；引导克隆全失败时 listen 后会推迟 kickoff，等本次成功再唤起。 |
 
 ## 执行流（Exec Streams）
 
@@ -223,7 +223,7 @@ Dockerfile 基于 **ubuntu:24.04**（可通过构建参数 `BASE_IMAGE` / 环境
 
 ## 任务云（SaaS）`git-clone-progress` 与 `segment`
 
-- **实现**：`src/saasTaskCloud.mjs` 中 `postCloneProgress` → `POST <TaskApi 前缀>/server-container-token/git-clone-progress/`。引导克隆见 `src/bootstrap.mjs`，单仓重克隆见 `src/server.mjs`（`POST /api/repos/reclone` 的后台任务）。
+- **实现**：`src/saasTaskCloud.mjs` 中 `postCloneProgress` → `POST <TaskApi 前缀>/server-container-token/git-clone-progress/`。引导克隆见 `src/bootstrap.mjs`，单仓重克隆见 `src/routesReposClone.mjs`（`POST /api/repos/reclone` 的后台任务）。
 - **多路并行标记**：每份 POST 体除 `access_token`、`progress`（0–100）、`message` 外，含**顶层** `repo_url`（可选）与对象 **`segment`**。`segment` 与 `GET /api/repos/bootstrap-clone-log` 的 `segments[].repo_url` 使用**相同** URL 串，供 SaaS 与任务详情页、SSE 对齐。
 - **`segment` 常用字段**（由容器填写，Django 白名单透传并规范化）：
 

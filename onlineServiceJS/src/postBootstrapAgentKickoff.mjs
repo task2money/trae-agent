@@ -11,6 +11,7 @@ import {
 import { normalizeAtMentionContextPack } from './atMentionContext.mjs';
 import { maybeStartAutoRunFirstInstruction } from './autoRunOrchestration.mjs';
 import { postJson, taskApiPrefix } from './saasTaskCloud.mjs';
+import { emitRuntimeEvent } from './runtimeEventLog.mjs';
 
 /**
  * 默认兜底取指令（OPT-20260822-021）：重拉 task-detail，优先
@@ -130,14 +131,105 @@ export async function runPostBootstrapAgentKickoff(opts) {
 }
 
 /**
+ * 引导已尝试克隆但层内尚无 git 时，推迟 Agent 首指令，等手动 reclone / 凭证恢复。
+ * @param {{ cloneAttempted?: boolean, hasGit?: boolean }} opts
+ */
+export function shouldDeferAgentKickoff(opts = {}) {
+  return Boolean(opts.cloneAttempted) && !opts.hasGit;
+}
+
+/**
+ * listen 后主路径：克隆全失败时推迟 kickoff，否则与现网一致立即建任务。
+ * @returns {Promise<{ kind: 'at_mention'|'auto_run'|null, rec: object|null, deferred: boolean }>}
+ */
+export async function maybeRunPostBootstrapAgentKickoff(opts) {
+  const layerId = String(opts?.layerId || '').trim();
+  if (shouldDeferAgentKickoff({ cloneAttempted: opts?.cloneAttempted, hasGit: opts?.hasGit })) {
+    emitRuntimeEvent('AGENT_KICKOFF_DEFERRED', {
+      level: 'warn',
+      message: 'clone_failed',
+      fields: { reason: 'clone_failed', layer_id: layerId },
+      consoleLine:
+        '[onlineServiceJS] AGENT_KICKOFF_DEFERRED reason=clone_failed waiting_for_reclone',
+    });
+    return { kind: null, rec: null, deferred: true };
+  }
+  const out = await runPostBootstrapAgentKickoff(opts);
+  return { ...out, deferred: false };
+}
+
+async function resolveCreateJobFn(opts) {
+  if (typeof opts?.createJobFn === 'function') return opts.createJobFn;
+  const { createJob } = await import('./jobsRuntime.mjs');
+  return createJob;
+}
+
+/**
+ * 克隆能力恢复后补跑 Agent kickoff（凭证恢复与手动 reclone 成功共用）。
+ * @param {{ detail: object|null|undefined, layerId: string, reason?: string, repoUrl?: string, createJobFn?: Function }} opts
+ */
+export async function resumeAgentKickoffAfterCloneReady(opts) {
+  const reason = String(opts?.reason || 'clone_ready').trim() || 'clone_ready';
+  const layerId = String(opts?.layerId || '').trim();
+  const repoUrl = String(opts?.repoUrl || '').trim();
+  emitRuntimeEvent('AGENT_KICKOFF_RESUME', {
+    message: reason,
+    fields: {
+      reason,
+      layer_id: layerId,
+      ...(repoUrl ? { repo_url: repoUrl.slice(0, 200) } : {}),
+    },
+    consoleLine: `[onlineServiceJS] AGENT_KICKOFF_RESUME reason=${reason} layer=${layerId}`,
+  });
+  const createJobFn = await resolveCreateJobFn(opts);
+  return runPostBootstrapAgentKickoff({
+    detail: opts?.detail,
+    layerId,
+    createJobFn,
+    ...(opts?.fsApi ? { fsApi: opts.fsApi } : {}),
+    ...(opts?.log ? { log: opts.log } : {}),
+  });
+}
+
+/**
+ * reclone 成功后的副作用：Git 身份同步（best-effort）+ 恢复被中断的自动任务。
+ */
+export async function runRecloneSuccessSideEffects(opts) {
+  const applyIdentities = opts?.applyIdentities;
+  const kickoff = opts?.kickoff || resumeAgentKickoffAfterCloneReady;
+  const log = opts?.log || console;
+  if (typeof applyIdentities === 'function') {
+    try {
+      await applyIdentities();
+    } catch {
+      /* identity sync is best-effort */
+    }
+  }
+  try {
+    await kickoff({
+      detail: opts?.detail,
+      layerId: opts?.layerId,
+      reason: 'reclone',
+      repoUrl: opts?.repoUrl,
+      createJobFn: opts?.createJobFn,
+    });
+  } catch (kickErr) {
+    const msg = String(kickErr?.message || kickErr).slice(0, 500);
+    if (typeof log.error === 'function') {
+      log.error(`[onlineServiceJS] reclone: agent kickoff failed: ${msg}`);
+    } else {
+      console.error(`[onlineServiceJS] reclone: agent kickoff failed: ${msg}`);
+    }
+  }
+}
+
+/**
  * 凭证恢复 bootstrap 成功后补跑 Agent kickoff（与 listen 后主路径同逻辑）。
  * @param {{ detail: object|null|undefined, layerId: string }} opts
  */
 export async function kickoffAfterCredentialsRecovery(opts) {
-  const { createJob } = await import('./jobsRuntime.mjs');
-  return runPostBootstrapAgentKickoff({
-    detail: opts?.detail,
-    layerId: opts?.layerId,
-    createJobFn: createJob,
+  return resumeAgentKickoffAfterCloneReady({
+    ...opts,
+    reason: 'credentials_recovery',
   });
 }
