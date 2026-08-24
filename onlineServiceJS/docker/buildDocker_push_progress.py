@@ -1,7 +1,7 @@
 import re, select, sys, time
 
 _FRAC = re.compile(
-    r"([\d.]+)\s*([KMGTPk]?[bB]|[KMGTP]B)\s*/\s*([\d.]+)\s*([KMGTPk]?[bB]|[KMGTP]B)"
+    r"([\d.]+)\s*([KMGTPk]?[bB])\s*/\s*([\d.]+)\s*([KMGTPk]?[bB])"
 )
 
 
