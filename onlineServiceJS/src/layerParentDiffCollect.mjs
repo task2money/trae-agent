@@ -11,7 +11,7 @@ export const MAX_DIFF_ENTRIES = 4000;
 function normalizeRel(p) {
   return String(p || '')
     .replace(/\\/g, '/')
-    .replace(/^\/+|\/+$/g, '');
+    .replace(/(^\/+)|(\/+$)/g, '');
 }
 
 /** 排除 .git 目录及路径任一段为 .git 的条目（含子模块 worktree 的 `.git` 文件） */

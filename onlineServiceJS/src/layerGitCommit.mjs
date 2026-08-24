@@ -94,7 +94,7 @@ export function syncNestedRepoHeadsFile(parentWorkdir, nestedEntries) {
     const p = String(ent.path || '')
       .trim()
       .replace(/\\/g, '/')
-      .replace(/^\/+|\/+$/g, '');
+      .replace(/(^\/+)|(\/+$)/g, '');
     const sha = String(ent.sha || '').trim();
     if (p && sha) map.set(p, sha);
   }
@@ -148,7 +148,7 @@ export function commitLayerGitWorkdirs(layerId, opts = {}) {
   const prefixDepth = (p) => {
     const s = String(p || '')
       .replace(/\\/g, '/')
-      .replace(/^\/+|\/+$/g, '');
+      .replace(/(^\/+)|(\/+$)/g, '');
     if (!s) return 0;
     return s.split('/').filter(Boolean).length;
   };

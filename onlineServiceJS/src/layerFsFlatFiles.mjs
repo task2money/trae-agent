@@ -14,7 +14,7 @@ import {
 function normalizeRel(p) {
   return String(p || '')
     .replace(/\\/g, '/')
-    .replace(/^\/+|\/+$/g, '');
+    .replace(/(^\/+)|(\/+$)/g, '');
 }
 
 function gitStatusPathSets(work) {

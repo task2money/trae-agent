@@ -9,7 +9,7 @@ const MAX_FILE_BYTES_FULL_COMPARE = 25 * 1024 * 1024;
 export function normalizeRel(p) {
   return String(p || '')
     .replace(/\\/g, '/')
-    .replace(/^\/+|\/+$/g, '');
+    .replace(/(^\/+)|(\/+$)/g, '');
 }
 
 export function safeJoin(root, relPosix) {

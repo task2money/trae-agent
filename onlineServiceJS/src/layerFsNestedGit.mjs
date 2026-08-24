@@ -17,7 +17,7 @@ function dirHasGit(p) {
 function normalizeRelPrefix(p) {
   return String(p || '')
     .replace(/\\/g, '/')
-    .replace(/^\/+|\/+$/g, '');
+    .replace(/(^\/+)|(\/+$)/g, '');
 }
 
 /**
