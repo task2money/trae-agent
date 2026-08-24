@@ -44,8 +44,43 @@ import {
 } from './layerFs.mjs';
 import { appendOutboundReqLog } from './outboundReqLog.mjs';
 import { buildGitCloneArgs } from './gitCloneHelpers.mjs';
-import { runRecloneSuccessSideEffects } from './postBootstrapAgentKickoff.mjs';
+import {
+  runRecloneSuccessSideEffects,
+  resumeAgentKickoffAfterCloneReady,
+} from './postBootstrapAgentKickoff.mjs';
 
+
+/**
+ * 判断克隆目标目录是否已出现 `.git`（git clone <url> . 在 cloneCwd 落盘）。
+ * 空工作区新建层（POST /repos/clone）克隆成功但无 .git 时不补跑 Agent kickoff。
+ */
+export function layerHasCloneGit(cloneCwd) {
+  try {
+    return fs.existsSync(path.join(cloneCwd, '.git'));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 构造 POST /repos/clone 成功后的 Agent kickoff 补跑回调（OPT-20260824-092）：
+ * 空工作区新建层克隆成功且层内出现 `.git`、且有 bootstrap task detail 时，
+ * 以 reason=manual_clone 调用 resumeAgentKickoffAfterCloneReady（与 reclone 恢复同语义）。
+ * best-effort：失败仅记 outbound log，不阻断克隆状态。
+ * @param {{ repoUrl: string, detail: object|null|undefined, resume?: Function, log?: Function }} deps
+ * @returns {(info: { lid: string, cloneCwd: string }) => unknown}
+ */
+export function buildManualCloneKickoff({ repoUrl, detail, resume, log }) {
+  const resumeFn = resume || resumeAgentKickoffAfterCloneReady;
+  const logFn = log || ((msg) => appendOutboundReqLog(msg));
+  return ({ lid, cloneCwd }) => {
+    if (!layerHasCloneGit(cloneCwd)) return;
+    if (!detail) return;
+    void resumeFn({ detail, layerId: lid, reason: 'manual_clone', repoUrl }).catch((e) => {
+      logFn(`clone: agent kickoff resume failed: ${e?.message || e}`);
+    });
+  };
+}
 
 export function registerReposCloneRoutes(api) {
   api.get('/repos/clone-log/:layer_id', (req, res) => {
@@ -145,6 +180,12 @@ export function registerReposCloneRoutes(api) {
         env,
         ephemeralKeyDir: null,
         titleUrl: url,
+        // 空工作区新建层（createInitialWorkspaceLayer）：克隆成功且层内出现 .git 后
+        // 补跑被推迟的 Agent kickoff（OPT-20260824-092，与 reclone 恢复同语义）。
+        onCloneSuccess: buildManualCloneKickoff({
+          repoUrl: url,
+          detail: lastBootstrapTaskDetail,
+        }),
       });
 
       res.status(202).json({

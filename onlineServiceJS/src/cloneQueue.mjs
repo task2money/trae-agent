@@ -44,6 +44,8 @@ export function getCloneOpStatus(layerId) {
  * @param {NodeJS.ProcessEnv} task.env
  * @param {string | null} task.ephemeralKeyDir
  * @param {string} [task.titleUrl]
+ * @param {(info: { lid: string, root: string, cloneCwd: string }) => unknown} [task.onCloneSuccess]
+ *   克隆成功（exit 0）后的钩子，由调用方决定是否补跑 Agent kickoff 等副作用。
  * @returns {number} queue_position 0-based
  */
 export function enqueueClone(task) {
@@ -155,6 +157,10 @@ function executeCloneTask(task) {
           completeExecStream('clone', lid);
           broadcast({ type: 'repo_clone_finished', layer_id: lid, title: '克隆成功', status: 'ok' });
           broadcast({ type: 'repo_cloned', layer_id: lid, title: '仓库已就绪' });
+          if (typeof task.onCloneSuccess === 'function') {
+            // best-effort：补跑 Agent kickoff 等副作用，失败不阻断克隆状态
+            Promise.resolve(task.onCloneSuccess({ lid, root, cloneCwd })).catch(() => {});
+          }
           return;
         }
         const tail = (outAcc || `git exit ${code}`).slice(-4000);
