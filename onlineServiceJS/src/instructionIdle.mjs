@@ -101,6 +101,11 @@ export async function fireInstructionIdleTimeout(opts = {}) {
   return released;
 }
 
+/** 引导完成（尚无指令）与 job 交付成功共用同一倒计时/心跳打标。 */
+export function startIdleWhenContainerReady(opts = {}) {
+  return maybeStartIdleAfterJob({ ...opts, idleEligible: true });
+}
+
 export function maybeStartIdleAfterJob({ idleEligible, heartbeatFn, releaseFn, deleteInstanceFn, setTimeoutFn, delayMs } = {}) {
   if (!idleEligible) return false;
   const started = startInstructionIdleCountdown({ releaseFn, deleteInstanceFn, setTimeoutFn, delayMs });

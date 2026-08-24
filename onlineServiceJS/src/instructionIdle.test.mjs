@@ -9,6 +9,7 @@ import {
   maybeStartIdleAfterJob,
   preemptForNewInstruction,
   resetInstructionIdleStateForTests,
+  startIdleWhenContainerReady,
   startInstructionIdleCountdown,
 } from './instructionIdle.mjs';
 
@@ -123,6 +124,20 @@ test('maybeStartIdleAfterJob respects idleEligible gate', () => {
     delayMs: 60_000,
   });
   assert.equal(ok, true);
+  assert.deepEqual(beats, [true]);
+  cancelInstructionIdleTimer();
+});
+
+test('startIdleWhenContainerReady marks idle after bootstrap without a job', () => {
+  resetInstructionIdleStateForTests();
+  applyIdlePolicyFromTaskDetail({ idle_recycle_minutes: 5 });
+  const beats = [];
+  const started = startIdleWhenContainerReady({
+    heartbeatFn: (v) => beats.push(v),
+    setTimeoutFn: (fn) => 1,
+    delayMs: 60_000,
+  });
+  assert.equal(started, true);
   assert.deepEqual(beats, [true]);
   cancelInstructionIdleTimer();
 });

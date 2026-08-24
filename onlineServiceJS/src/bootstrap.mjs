@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
-import { postJson } from './saasTaskCloud.mjs';
+import { postJson, postContainerHeartbeatToSaas, postRequestMachineRelease } from './saasTaskCloud.mjs';
+import { startIdleWhenContainerReady } from './instructionIdle.mjs';
 import { appendOutboundReqLog } from './outboundReqLog.mjs';
 import {
   setBootstrapCloneLayerId,
@@ -248,6 +249,10 @@ export async function runBootstrapAfterListen(ctx) {
     message: '任务引导完成（详情已拉取、克隆与配置已就绪）。',
     consoleLine:
       '[onlineServiceJS] BOOTSTRAP_COMPLETE 任务引导完成（详情已拉取、克隆与配置已就绪）。',
+  });
+  startIdleWhenContainerReady({
+    heartbeatFn: (idle) => postContainerHeartbeatToSaas('', { instruction_idle: idle }),
+    releaseFn: postRequestMachineRelease,
   });
 }
 
