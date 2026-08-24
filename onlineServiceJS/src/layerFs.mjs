@@ -398,7 +398,7 @@ export function deleteLayerTree(layerId) {
 export function sanitizeCloneDirName(raw) {
   const s = String(raw || '').trim();
   if (!s) return '';
-  return s.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^[-._]+|[-._]+$/g, '') || '';
+  return s.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/(?:^[-._]+|[-._]+$)/g, '') || '';
 }
 
 /**

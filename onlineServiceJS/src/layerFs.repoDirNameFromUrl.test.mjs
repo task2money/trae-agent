@@ -36,6 +36,7 @@ describe('resolveRepoCloneDirName', () => {
   });
 
   it('sanitizes alias and falls back when empty after sanitize', () => {
+    assert.equal(sanitizeCloneDirName('---foo---'), 'foo');
     assert.equal(sanitizeCloneDirName('My App!!'), 'My-App');
     assert.equal(
       resolveRepoCloneDirName('https://github.com/acme/somanyad.git', '---'),
