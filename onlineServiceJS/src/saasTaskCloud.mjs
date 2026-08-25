@@ -27,6 +27,8 @@ export {
   latestGitProgressPercent,
   normalizeGitProgressChunkForLog,
   shouldEmitGitCloneProgressPercent,
+  parseGitCloneReceivedBytes,
+  resolveGitCloneReceivedBytes,
 } from './saasTaskCloudGitProgress.mjs';
 export {
   postCloneProgress,

@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import { randomUUID } from 'node:crypto';
 import { spawn } from 'child_process';
 import { appendOutboundReqLog } from './outboundReqLog.mjs';
 import { gitCmd, gitCloneConfigArgs } from './gitCmd.mjs';
@@ -12,6 +13,7 @@ import {
   isRetryableGitCloneFailure,
   runGitCloneWithProgress,
   shouldEmitGitCloneProgressPercent,
+  resolveGitCloneReceivedBytes,
 } from './saasTaskCloud.mjs';
 import { bootstrapRepoLogState } from './bootstrapState.mjs';
 import { prepareOauthHttpsGitClone } from './bootstrapRepoCredentials.mjs';
@@ -52,11 +54,12 @@ export async function runOneBootstrapClone({
       : [...gitCloneConfigArgs(), 'clone', '--progress', cloneRemote, repoDir];
     const { maxAttempts, backoffMs } = gitCloneRetryConfigFromEnv();
     let attempt = 1;
+    let lastStderr = '';
     while (attempt <= maxAttempts) {
       let lastPosted = 0;
       let lastPct = -1;
       try {
-        await runGitCloneWithProgress(args, gitEnv, undefined, (chunk, errAll) => {
+        lastStderr = await runGitCloneWithProgress(args, gitEnv, undefined, (chunk, errAll) => {
           if (chunk) {
             const ent = bootstrapRepoLogState?.bufs.get(raw);
             if (ent) ent.body += normalizeGitProgressChunkForLog(chunk);
@@ -104,13 +107,22 @@ export async function runOneBootstrapClone({
         attempt += 1;
       }
     }
+    const receivedBytes = resolveGitCloneReceivedBytes(lastStderr, repoDir);
     await postCloneProgress(
       cloudPrefix,
       accessToken,
       100,
       `项目克隆 (${i + 1}/${n}) 完成 ${path.basename(repoDir)}`,
       raw,
-      { phase: 'bootstrap', index: i + 1, total: n, recv_progress: 100, unpack_progress: 100 }
+      {
+        phase: 'bootstrap',
+        index: i + 1,
+        total: n,
+        recv_progress: 100,
+        unpack_progress: 100,
+        received_bytes: receivedBytes,
+        clone_session_id: randomUUID(),
+      }
     );
     return { ok: true };
   } catch (err) {

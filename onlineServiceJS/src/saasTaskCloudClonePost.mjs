@@ -77,6 +77,13 @@ export async function postCloneProgress(cloudPrefix, accessToken, progress, mess
   if (segment && Object.keys(segment).length) {
     body.segment = segment;
   }
+  const ex = segmentExtra && typeof segmentExtra === 'object' ? segmentExtra : null;
+  if (ex && typeof ex.received_bytes === 'number' && Number.isFinite(ex.received_bytes) && ex.received_bytes > 0) {
+    body.received_bytes = Math.floor(ex.received_bytes);
+  }
+  if (ex && typeof ex.clone_session_id === 'string' && ex.clone_session_id.trim()) {
+    body.clone_session_id = ex.clone_session_id.trim().slice(0, 128);
+  }
   const send = () => postJson(url, body, 10);
   const chainKey = cloneProgressChainKey(ru);
   const prev = cloneProgressSendChains.get(chainKey) || Promise.resolve();

@@ -1,6 +1,8 @@
 /**
  * 解析 `git clone --progress` stderr：Receiving vs 解压/Checkout，以及日志换行归一。
  */
+import fs from 'fs';
+import path from 'path';
 
 /**
  * @param {string} stderrAll
@@ -68,4 +70,77 @@ export function latestGitProgressPercent(stderrAll) {
 /** git --progress 用 \r 刷行；写入持久克隆日志时换成换行 */
 export function normalizeGitProgressChunkForLog(s) {
   return String(s || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+}
+
+const GIT_SIZE_UNIT_BYTES = {
+  B: 1,
+  byte: 1,
+  bytes: 1,
+  KiB: 1024,
+  MiB: 1024 * 1024,
+  GiB: 1024 * 1024 * 1024,
+  KB: 1000,
+  MB: 1000 * 1000,
+  GB: 1000 * 1000 * 1000,
+};
+
+/**
+ * 从 `git clone --progress` stderr 解析 Receiving objects 已接收字节（取最后一次带单位的行）。
+ * @param {string} stderrAll
+ * @returns {number}
+ */
+export function parseGitCloneReceivedBytes(stderrAll) {
+  const text = String(stderrAll || '');
+  const re = /Receiving objects:\s*\d+%\s*\([^)]+\),\s*([\d.]+)\s*(KiB|MiB|GiB|KB|MB|GB|bytes?)/gi;
+  let last = 0;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    const n = Number.parseFloat(m[1]);
+    const unit = String(m[2] || '');
+    const mul = GIT_SIZE_UNIT_BYTES[unit] || GIT_SIZE_UNIT_BYTES[unit.replace(/s$/i, '')];
+    if (Number.isFinite(n) && n > 0 && mul) {
+      last = Math.round(n * mul);
+    }
+  }
+  return last > 0 ? last : 0;
+}
+
+/**
+ * 回退：`.git/objects/pack/*.pack` 体积（无 progress 尺寸行时）。
+ * @param {string} repoDir
+ * @returns {number}
+ */
+export function sumGitPackBytes(repoDir) {
+  const root = String(repoDir || '').trim();
+  if (!root) return 0;
+  const packDir = path.join(root, '.git', 'objects', 'pack');
+  let names;
+  try {
+    names = fs.readdirSync(packDir);
+  } catch {
+    return 0;
+  }
+  let total = 0;
+  for (const name of names) {
+    if (!String(name).endsWith('.pack')) continue;
+    try {
+      const st = fs.statSync(path.join(packDir, name));
+      if (st && Number.isFinite(st.size) && st.size > 0) total += st.size;
+    } catch {
+      /* ignore one pack */
+    }
+  }
+  return total;
+}
+
+/**
+ * @param {string} stderrAll
+ * @param {string} [repoDir]
+ * @returns {number}
+ */
+export function resolveGitCloneReceivedBytes(stderrAll, repoDir) {
+  const fromLog = parseGitCloneReceivedBytes(stderrAll);
+  if (fromLog > 0) return fromLog;
+  if (!repoDir) return 0;
+  return sumGitPackBytes(repoDir);
 }

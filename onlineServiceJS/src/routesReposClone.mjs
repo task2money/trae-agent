@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import { randomUUID } from 'node:crypto';
 import {
   bootstrapCloneLayerId,
   getCloneLayerLogText,
@@ -23,6 +24,7 @@ import {
   isRetryableGitCloneFailure,
   runGitCloneWithProgress,
   shouldEmitGitCloneProgressPercent,
+  resolveGitCloneReceivedBytes,
 } from './saasTaskCloud.mjs';
 import {
   getExecStreamManifest,
@@ -313,11 +315,12 @@ export function registerReposCloneRoutes(api) {
           }
           const { maxAttempts, backoffMs } = gitCloneRetryConfigFromEnv();
           let attempt = 1;
+          let lastStderr = '';
           while (attempt <= maxAttempts) {
             let lastPosted = 0;
             let lastPct = -1;
             try {
-              await runGitCloneWithProgress(gitArgs, env, stagingDir, (chunk, errAll) => {
+              lastStderr = await runGitCloneWithProgress(gitArgs, env, stagingDir, (chunk, errAll) => {
                 if (chunk) {
                   try {
                     appendCloneLayerLog(layerId, normalizeGitProgressChunkForLog(chunk));
@@ -379,10 +382,13 @@ export function registerReposCloneRoutes(api) {
             /* ignore */
           }
           if (prefix && accessToken) {
+            const receivedBytes = resolveGitCloneReceivedBytes(lastStderr, target);
             await postCloneProgress(prefix, accessToken, 100, `【重新克隆】完成 ${name}`, repoUrl, {
               phase: 'reclone',
               recv_progress: 100,
               unpack_progress: 100,
+              received_bytes: receivedBytes,
+              clone_session_id: randomUUID(),
             });
           }
           try {
