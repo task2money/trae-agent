@@ -15,6 +15,9 @@ import {
 import { commitLayerGitWorkdirs } from './layerGitCommit.mjs';
 import { runLayerOauthRefreshPush } from './layerGitOauthRefreshPush.mjs';
 import { emitRuntimeEvent } from './runtimeEventLog.mjs';
+import { agentModelsEnvFromContextPack } from './autoRunAgentModelsEnv.mjs';
+
+export { agentModelsEnvFromContextPack } from './autoRunAgentModelsEnv.mjs';
 
 export function composeAutoRunCommand(title, description) {
   const t = String(title || '').trim();
@@ -200,13 +203,15 @@ export async function maybeStartAutoRunFirstInstruction(opts) {
   const mountFromAutoRun =
     String(detail?.at_mention_run?.source || '').trim().toLowerCase() === 'auto_run';
 
+  const agentEnv = agentModelsEnvFromContextPack(detail);
   emitRuntimeEvent('AUTO_RUN_FIRST_INSTRUCTION_START', {
     fields: {
       layer_id: layerId,
       command_len: command.length,
       mounted_agent_comment_id: mountFromAutoRun ? mountAgentId : '',
+      model: agentEnv?.TASK_AGENT_MODEL || '',
     },
-    consoleLine: `[onlineServiceJS] AUTO_RUN_FIRST_INSTRUCTION_START layer_id=${layerId} command_len=${command.length}`,
+    consoleLine: `[onlineServiceJS] AUTO_RUN_FIRST_INSTRUCTION_START layer_id=${layerId} command_len=${command.length} model=${agentEnv?.TASK_AGENT_MODEL || ''}`,
   });
   const rec = await createJobFn({
     command,
@@ -214,6 +219,7 @@ export async function maybeStartAutoRunFirstInstruction(opts) {
     repo_layer_id: layerId,
     auto_run_first: true,
     auto_run_commit_message: String(title || '').trim() || 'auto_run',
+    ...(agentEnv ? { env: agentEnv } : {}),
     ...(mountFromAutoRun && mountAgentId
       ? {
           mounted_agent_comment_id: mountAgentId,

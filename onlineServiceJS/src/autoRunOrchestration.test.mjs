@@ -5,6 +5,7 @@ import os from 'os';
 import path from 'path';
 
 import {
+  agentModelsEnvFromContextPack,
   composeAutoRunCommand,
   shouldTriggerAutoRunFirstInstruction,
   maybeStartAutoRunFirstInstruction,
@@ -107,6 +108,50 @@ test('maybeStartAutoRunFirstInstruction creates job once when auto_run', async (
   });
   assert.equal(again, null);
   assert.equal(calls.length, 1);
+});
+
+test('agentModelsEnvFromContextPack reads pack and at_mention_run', () => {
+  assert.deepEqual(
+    agentModelsEnvFromContextPack({
+      context_pack: {
+        agent_models: [{ provider: 'openai', model: 'gpt-4.1-mini' }],
+      },
+    }),
+    { TASK_AGENT_MODEL: 'gpt-4.1-mini', TASK_AGENT_MODEL_PROVIDER: 'openai' },
+  );
+  assert.deepEqual(
+    agentModelsEnvFromContextPack({
+      at_mention_run: {
+        source: 'auto_run',
+        agent_models: [{ provider: 'deepSeek', model: 'deepseek-v4-pro' }],
+      },
+    }),
+    { TASK_AGENT_MODEL: 'deepseek-v4-pro', TASK_AGENT_MODEL_PROVIDER: 'deepSeek' },
+  );
+  assert.equal(agentModelsEnvFromContextPack({ task: { auto_run: true } }), null);
+});
+
+test('maybeStartAutoRunFirstInstruction overlays TASK_AGENT_MODEL env', async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'autorun-'));
+  process.env.ONLINE_PROJECT_STATE_ROOT = tmp;
+  const calls = [];
+  const rec = await maybeStartAutoRunFirstInstruction({
+    detail: {
+      task: { auto_run: true, title: 'Fix bug', description: 'Do it' },
+      context_pack: {
+        at_mention_run: { source: 'auto_run' },
+        agent_models: [{ provider: 'openai', model: 'gpt-4.1-mini' }],
+      },
+    },
+    layerId: 'layer_root',
+    createJobFn: async (body) => {
+      calls.push(body);
+      return { id: 'job_env', layer_id: 'layer_child', ...body };
+    },
+  });
+  assert.ok(rec);
+  assert.equal(calls[0].env.TASK_AGENT_MODEL, 'gpt-4.1-mini');
+  assert.equal(calls[0].env.TASK_AGENT_MODEL_PROVIDER, 'openai');
 });
 
 test('maybeStartAutoRunFirstInstruction skips when auto_run false', async () => {
