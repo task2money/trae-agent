@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 
-import { bootstrapCloneLayerId } from './bootstrapState.mjs';
+import { bootstrapCloneLayerId, lastBootstrapFailure } from './bootstrapState.mjs';
 import { getCloneOpStatus } from './cloneQueue.mjs';
 import {
   deleteLayerTree,
@@ -115,21 +115,31 @@ export function buildLayersSnapshot(bootstrapLayerId) {
     const meta = readLayerMeta(lid);
     if (meta?.kind === 'empty') {
       // 引导空层锚点：心跳早于克隆时若过滤掉，层图会变成 0 节点。
-      // 输出为「正在准备可写层」的 pending 节点，前端据此展示引导中文案而非空白。
+      // 尚无失败时输出 pending；已有 lastBootstrapFailure 时标 failed，避免前端永远「正在准备」。
+      const fail = lastBootstrapFailure;
+      const failed = Boolean(fail && (fail.code || fail.message));
       layers.push({
         layer_id: lid,
         created_at: row.created_at,
         command: null,
         parent_layer_id: resolvedParentLayerId(lid, known, jobsList),
         job_id: null,
-        job_status: null,
+        job_status: failed ? 'failed' : null,
         queue_depth: 0,
         queue_items: [],
-        mind_state: 'pending',
+        mind_state: failed ? 'failed' : 'pending',
         git_worktree_dirty: false,
         git_remote: null,
         meta_kind: 'empty',
-        bootstrap_pending: true,
+        bootstrap_pending: !failed,
+        ...(failed
+          ? {
+              bootstrap_failed: true,
+              bootstrap_error_code: fail.code || '',
+              bootstrap_error: fail.message || '',
+              bootstrap_phase: fail.phase || '',
+            }
+          : {}),
       });
       continue;
     }
