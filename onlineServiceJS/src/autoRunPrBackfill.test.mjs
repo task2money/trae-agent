@@ -82,10 +82,48 @@ test('backfillAutoRunPrToAgentComment calls complete with PR text', async () => 
       saw = opts;
       return { ok: true };
     },
+    recordGitPrReplyFn: async () => ({ ok: true, skipped: true, reason: 'stub' }),
   });
   assert.equal(out.ok, true);
   assert.equal(saw.agentCommentId, 'agent-1');
   assert.match(saw.assistantResponse, /https:\/\/github.com\/acme\/demo\/pull\/3/);
+});
+
+test('backfillAutoRunPrToAgentComment records git_pr human reply after complete', async () => {
+  let replyOpts = null;
+  const out = await backfillAutoRunPrToAgentComment({
+    agentCommentId: 'agent-1',
+    parentCommentId: 'cmt-exec',
+    pushResult: {
+      payload: { repos: [{ pr: { html_url: 'https://github.com/acme/demo/pull/3' } }] },
+    },
+    completeFn: async () => ({ ok: true }),
+    recordGitPrReplyFn: async (opts) => {
+      replyOpts = opts;
+      return { ok: true, replies: [{ ok: true, html_url: opts.urls[0], skipped: false }] };
+    },
+  });
+  assert.equal(out.ok, true);
+  assert.deepEqual(replyOpts.urls, ['https://github.com/acme/demo/pull/3']);
+  assert.equal(replyOpts.parentCommentId, 'cmt-exec');
+  assert.equal(out.git_pr_replies.ok, true);
+});
+
+test('backfillAutoRunPrToAgentComment skips git_pr reply without urls', async () => {
+  let replyCalled = false;
+  const out = await backfillAutoRunPrToAgentComment({
+    agentCommentId: 'agent-1',
+    parentCommentId: 'cmt-exec',
+    skippedClean: true,
+    completeFn: async () => ({ ok: true }),
+    recordGitPrReplyFn: async () => {
+      replyCalled = true;
+      return { ok: true };
+    },
+  });
+  assert.equal(out.ok, true);
+  assert.equal(replyCalled, false);
+  assert.equal(out.git_pr_replies, null);
 });
 
 test('backfillAutoRunPrToAgentComment uses rememberedPrUrl when payload has no repos', async () => {

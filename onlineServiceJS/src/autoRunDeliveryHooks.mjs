@@ -119,6 +119,10 @@ export async function triggerAutoRunDeliveryForJob(rec, deps = {}) {
       layerId && typeof readPr === 'function' ? String(readPr(layerId) || '').trim() : '';
     const backfillFn = deps.backfillAutoRunPrToAgentComment || backfillAutoRunPrToAgentComment;
     try {
+      const parentCommentId =
+        String(rec?.mounted_parent_comment_id || '').trim() ||
+        String(mention?.parent_comment_id || '').trim() ||
+        String(process.env.COMMENT_ID || '').trim();
       result.pr_backfill = await backfillFn({
         agentCommentId,
         pushResult: result.pushResult,
@@ -128,6 +132,7 @@ export async function triggerAutoRunDeliveryForJob(rec, deps = {}) {
         kind: isEditRun ? 'edit_run' : 'auto_run',
         failed: !result?.ok,
         detail: String(result?.pushResult?.payload?.detail || result?.detail || '').trim(),
+        parentCommentId,
       });
     } catch (e) {
       result.pr_backfill = { ok: false, detail: String(e?.message || e).slice(0, 400) };

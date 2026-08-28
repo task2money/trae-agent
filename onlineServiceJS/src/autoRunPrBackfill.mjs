@@ -6,6 +6,7 @@ import { taskApiPrefix } from './saasTaskCloud.mjs';
 import { emitRuntimeEvent } from './runtimeEventLog.mjs';
 import { withSaasInboundScope } from './saasInboundScope.mjs';
 import { traceHeadersForOutbound } from './traceId.mjs';
+import { recordAutoRunGitPrReplyComments } from './autoRunGitPrReplyComment.mjs';
 
 function collectRepoPrUrls(repos, push) {
   const list = Array.isArray(repos) ? repos : [];
@@ -155,6 +156,8 @@ export async function completeMountedAgentComment(opts) {
  *   skippedClean?: boolean,
  *   kind?: 'auto_run'|'edit_run',
  *   completeFn?: typeof completeMountedAgentComment,
+ *   recordGitPrReplyFn?: typeof recordAutoRunGitPrReplyComments,
+ *   parentCommentId?: string,
  * }} opts
  */
 export async function backfillAutoRunPrToAgentComment(opts = {}) {
@@ -199,5 +202,20 @@ export async function backfillAutoRunPrToAgentComment(opts = {}) {
       consoleLine: `[onlineServiceJS] AUTO_RUN_PR_BACKFILL_FAILED agent_comment_id=${agentCommentId} detail=${String(result.detail || '').slice(0, 240)}`,
     });
   }
-  return { ...result, urls, text };
+  let gitPrReplies = null;
+  if (result.ok && urls.length) {
+    const recordFn = opts?.recordGitPrReplyFn || recordAutoRunGitPrReplyComments;
+    try {
+      gitPrReplies = await recordFn({
+        urls,
+        parentCommentId: opts?.parentCommentId,
+        accessToken: opts?.accessToken,
+        prefixFn: opts?.prefixFn,
+        readTokenFn: opts?.readTokenFn,
+      });
+    } catch (e) {
+      gitPrReplies = { ok: false, detail: String(e?.message || e).slice(0, 400) };
+    }
+  }
+  return { ...result, urls, text, git_pr_replies: gitPrReplies };
 }

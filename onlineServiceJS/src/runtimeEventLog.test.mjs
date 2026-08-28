@@ -44,6 +44,8 @@ test('RUNTIME_EVENT_NAMES includes bootstrap and auto_run keys', () => {
   assert.ok(RUNTIME_EVENT_NAMES.has('AUTO_RUN_FIRST_SKIP'));
   assert.ok(RUNTIME_EVENT_NAMES.has('AGENT_KICKOFF_DEFERRED'));
   assert.ok(RUNTIME_EVENT_NAMES.has('AGENT_KICKOFF_RESUME'));
+  assert.ok(RUNTIME_EVENT_NAMES.has('AUTO_RUN_GIT_PR_REPLY_OK'));
+  assert.ok(RUNTIME_EVENT_NAMES.has('AUTO_RUN_GIT_PR_REPLY_FAILED'));
 });
 
 test('emitRuntimeEvent posts allowed events via postFn', async () => {

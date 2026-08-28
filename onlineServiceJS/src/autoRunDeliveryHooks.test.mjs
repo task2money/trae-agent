@@ -65,7 +65,7 @@ test('triggerAutoRunDeliveryForJob backfills PR into mounted agent comment', asy
     {
       lastBootstrapTaskDetail: {
         task: { title: 'T', target_branch: 'feat/x', auto_run: true },
-        at_mention_run: { source: 'auto_run', agent_comment_id: 'agent-42' },
+        at_mention_run: { source: 'auto_run', agent_comment_id: 'agent-42', parent_comment_id: 'cmt-parent' },
       },
       runAutoRunDelivery: async () => ({
         ok: true,
@@ -84,6 +84,7 @@ test('triggerAutoRunDeliveryForJob backfills PR into mounted agent comment', asy
   assert.equal(backfillOpts.priorAssistantResponse, 'job stdout');
   assert.equal(backfillOpts.pushResult.payload.repos[0].pr.html_url, 'https://github.com/acme/x/pull/9');
   assert.equal(result.pr_backfill?.ok, true);
+  assert.equal(backfillOpts.parentCommentId, 'cmt-parent');
 });
 
 test('triggerAutoRunDeliveryForJob edit_run forces delivery and backfills', async () => {
