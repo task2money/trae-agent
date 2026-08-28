@@ -46,6 +46,7 @@ test('RUNTIME_EVENT_NAMES includes bootstrap and auto_run keys', () => {
   assert.ok(RUNTIME_EVENT_NAMES.has('AGENT_KICKOFF_RESUME'));
   assert.ok(RUNTIME_EVENT_NAMES.has('AUTO_RUN_GIT_PR_REPLY_OK'));
   assert.ok(RUNTIME_EVENT_NAMES.has('AUTO_RUN_GIT_PR_REPLY_FAILED'));
+  assert.ok(RUNTIME_EVENT_NAMES.has('CONTAINER_AGENT_COMMENT_CREATED'));
 });
 
 test('emitRuntimeEvent posts allowed events via postFn', async () => {

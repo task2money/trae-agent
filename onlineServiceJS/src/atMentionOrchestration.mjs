@@ -7,6 +7,7 @@ import fs from 'fs';
 import path from 'path';
 import { runtimeDir } from './paths.mjs';
 import { normalizeAtMentionContextPack } from './atMentionContext.mjs';
+import { createEditRunAgentComment } from './editRunAgentComment.mjs';
 
 export function atMentionJobMarkerPath() {
   return path.join(runtimeDir(), 'at_mention_job.json');
@@ -138,9 +139,33 @@ export async function maybeStartAtMentionJob(opts) {
     return null;
   }
 
-  const run = normalized.pack.at_mention_run;
+  const run = { ...normalized.pack.at_mention_run };
+  let agentCommentId = String(run.agent_comment_id || '').trim();
+  if (!agentCommentId) {
+    const imageId = String(run.installed_image?.id || normalized.pack.installed_image?.id || '').trim();
+    const createFn = opts?.createAgentCommentFn || createEditRunAgentComment;
+    const created = await createFn({
+      parentCommentId: String(run.parent_comment_id || '').trim(),
+      installedImageId: imageId,
+      content: command,
+      source: String(run.source || 'at_mention').trim() || 'at_mention',
+      agentModels: run.agent_models,
+    });
+    if (!created?.ok || !String(created.id || '').trim()) {
+      console.warn(
+        `[onlineServiceJS] AT_MENTION_JOB_SKIP reason=create_agent_comment_failed detail=${String(created?.detail || '').slice(0, 200)}`,
+      );
+      return null;
+    }
+    agentCommentId = String(created.id).trim();
+    run.agent_comment_id = agentCommentId;
+    run.run_id = String(run.run_id || agentCommentId).trim();
+    console.log(
+      `[onlineServiceJS] event=at_mention_agent_comment_created agent_comment_id=${agentCommentId} parent_comment_id=${String(run.parent_comment_id || '')}`,
+    );
+  }
   console.log(
-    `[onlineServiceJS] event=at_mention_job_start run_id=${String(run.run_id || '')} agent_comment_id=${String(run.agent_comment_id || '')} layer_id=${layerId} command_len=${command.length}`,
+    `[onlineServiceJS] event=at_mention_job_start run_id=${String(run.run_id || '')} agent_comment_id=${agentCommentId} layer_id=${layerId} command_len=${command.length}`,
   );
   const rec = await createJobFn({
     command,
@@ -148,11 +173,12 @@ export async function maybeStartAtMentionJob(opts) {
     repo_layer_id: layerId,
     at_mention_run: true,
     at_mention_run_id: String(run.run_id || ''),
-    at_mention_agent_comment_id: String(run.agent_comment_id || ''),
+    at_mention_agent_comment_id: agentCommentId,
+    mounted_agent_comment_id: agentCommentId,
   });
   writeAtMentionJobMarker(rec?.id, {
     run_id: String(run.run_id || ''),
-    agent_comment_id: String(run.agent_comment_id || ''),
+    agent_comment_id: agentCommentId,
   }, fsApi);
   console.log(
     `[onlineServiceJS] event=at_mention_job_started job_id=${String(rec?.id || '')} run_id=${String(run.run_id || '')} layer_id=${String(rec?.layer_id || '')}`,
@@ -201,6 +227,29 @@ export async function maybeStartCommentIdFallbackJob(opts) {
     return null;
   }
 
+  const imageId = String(
+    detail?.task?.installed_image_id ||
+      detail?.at_mention_run?.installed_image?.id ||
+      '',
+  ).trim();
+  let agentCommentId = '';
+  if (imageId) {
+    const createFn = opts?.createAgentCommentFn || createEditRunAgentComment;
+    const created = await createFn({
+      parentCommentId: commentId,
+      installedImageId: imageId,
+      content: command,
+      source: 'at_mention',
+    });
+    if (created?.ok && String(created.id || '').trim()) {
+      agentCommentId = String(created.id).trim();
+    } else {
+      log.warn?.(
+        `[onlineServiceJS] COMMENT_ID_FALLBACK_AGENT_CREATE_FAILED comment_id=${commentId} detail=${String(created?.detail || '').slice(0, 200)}`,
+      );
+    }
+  }
+
   log.log?.(
     `[onlineServiceJS] COMMENT_ID_FALLBACK_START comment_id=${commentId} command_len=${command.length}`,
   );
@@ -209,8 +258,9 @@ export async function maybeStartCommentIdFallbackJob(opts) {
     command_kind: 'trae',
     repo_layer_id: layerId,
     at_mention_run: true,
-    at_mention_run_id: '',
-    at_mention_agent_comment_id: '',
+    at_mention_run_id: agentCommentId,
+    at_mention_agent_comment_id: agentCommentId,
+    mounted_agent_comment_id: agentCommentId,
     comment_id_fallback: true,
   });
   writeAtMentionJobMarker(rec?.id, { comment_id_fallback: true, comment_id: commentId }, fsApi);

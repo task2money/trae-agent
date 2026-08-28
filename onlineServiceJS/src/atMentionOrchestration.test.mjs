@@ -154,6 +154,40 @@ test('maybeStartAtMentionJob skips when no at_mention_run', async () => {
   assert.equal(called, 0);
 });
 
+test('maybeStartAtMentionJob creates agent comment when pack omits agent_comment_id', async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'atmention-'));
+  process.env.ONLINE_PROJECT_STATE_ROOT = tmp;
+  const jobs = [];
+  const creates = [];
+  const rec = await maybeStartAtMentionJob({
+    detail: {
+      at_mention_run: {
+        parent_comment_id: 'c1',
+        installed_image: { id: 'img-1' },
+        trigger_comment: { id: 'c1', content: 'ship it' },
+        source: 'auto_run',
+      },
+      comment_thread: [{ kind: 'human', id: 'c1', content: 'ship it' }],
+    },
+    layerId: 'L1',
+    createJobFn: async (body) => {
+      jobs.push(body);
+      return { id: 'job_new', ...body };
+    },
+    createAgentCommentFn: async (opts) => {
+      creates.push(opts);
+      return { ok: true, id: 'agent-created' };
+    },
+  });
+  assert.ok(rec);
+  assert.equal(creates.length, 1);
+  assert.equal(creates[0].parentCommentId, 'c1');
+  assert.equal(creates[0].installedImageId, 'img-1');
+  assert.equal(creates[0].source, 'auto_run');
+  assert.equal(jobs[0].at_mention_agent_comment_id, 'agent-created');
+  assert.equal(jobs[0].mounted_agent_comment_id, 'agent-created');
+});
+
 test('maybeStartAtMentionJob skips invalid pack (missing ids)', async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'atmention-'));
   process.env.ONLINE_PROJECT_STATE_ROOT = tmp;

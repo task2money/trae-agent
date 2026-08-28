@@ -169,6 +169,34 @@ test('runPostBootstrapAgentKickoff starts at_mention via COMMENT_ID fallback whe
   assert.match(String(calls[0].command), /Fix the bug/);
 });
 
+test('runPostBootstrapAgentKickoff creates agent comment when pack deferred to parent+image', async () => {
+  tmpState();
+  const jobs = [];
+  const creates = [];
+  const out = await runPostBootstrapAgentKickoff({
+    detail: {
+      task: { auto_run: false, title: 'T', installed_image_id: 'img-1' },
+    },
+    layerId: 'layer_def',
+    commentId: 'cmt_parent',
+    fetchCommentContent: async () => ({ content: '@镜像 ship' }),
+    createAgentCommentFn: async (opts) => {
+      creates.push(opts);
+      return { ok: true, id: 'agent-new' };
+    },
+    createJobFn: async (body) => {
+      jobs.push(body);
+      return { id: 'job_def', layer_id: 'layer_def' };
+    },
+  });
+  assert.equal(out.kind, 'at_mention');
+  assert.equal(creates.length, 1);
+  assert.equal(creates[0].parentCommentId, 'cmt_parent');
+  assert.equal(creates[0].installedImageId, 'img-1');
+  assert.equal(jobs[0].mounted_agent_comment_id, 'agent-new');
+  assert.equal(jobs[0].comment_id_fallback, undefined);
+});
+
 test('runPostBootstrapAgentKickoff uses context_pack comment_thread before fetch', async () => {
   tmpState();
   let fetched = false;

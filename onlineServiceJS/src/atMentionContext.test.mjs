@@ -7,6 +7,22 @@ test('normalizeAtMentionContextPack requires at_mention_run ids', () => {
   assert.equal(r.ok, false)
 })
 
+test('normalizeAtMentionContextPack allows missing agent_comment_id when image present', () => {
+  const r = normalizeAtMentionContextPack({
+    at_mention_run: {
+      parent_comment_id: 'c1',
+      installed_image: { id: 'img-1', name: 'trae' },
+      trigger_comment: { id: 'c1', content: 'run' },
+    },
+    comment_thread: [{ kind: 'human', id: 'c1', content: 'run' }],
+  })
+  assert.equal(r.ok, true)
+  assert.equal(r.pack.at_mention_run.parent_comment_id, 'c1')
+  assert.equal(r.pack.at_mention_run.agent_comment_id, undefined)
+  assert.equal(r.pack.at_mention_run.installed_image.id, 'img-1')
+  assert.equal(r.pack.at_mention_run.run_id, 'c1')
+})
+
 test('normalizeAtMentionContextPack accepts minimal pack', () => {
   const r = normalizeAtMentionContextPack({
     at_mention_run: {

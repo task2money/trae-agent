@@ -72,7 +72,6 @@ export async function defaultFetchCommentContent(commentId, deps = {}) {
  * @returns {Promise<{ kind: 'at_mention'|'auto_run'|null, rec: object|null }>}
  */
 export async function runPostBootstrapAgentKickoff(opts) {
-  const detail = opts?.detail;
   const layerId = String(opts?.layerId || '').trim();
   const createJobFn = opts?.createJobFn;
   const fsApi = opts?.fsApi;
@@ -80,6 +79,39 @@ export async function runPostBootstrapAgentKickoff(opts) {
 
   if (typeof createJobFn !== 'function') {
     throw new Error('createJobFn required');
+  }
+
+  let detail = opts?.detail;
+  if (!detailHasAtMentionRun(detail)) {
+    const commentId = String(opts?.commentId || process.env.COMMENT_ID || '').trim();
+    const imageId = String(detail?.task?.installed_image_id || '').trim();
+    if (commentId && commentId !== '-' && imageId) {
+      const autoRun = Boolean(detail?.task?.auto_run);
+      let command = '';
+      if (autoRun) {
+        const title = String(detail?.task?.title || '').trim();
+        const description = String(detail?.task?.description || '').trim();
+        command = [title, description].filter(Boolean).join('\n\n');
+      } else {
+        try {
+          const fetched = await (opts?.fetchCommentContent || defaultFetchCommentContent)(commentId);
+          command = String(fetched?.content || '').trim();
+        } catch {
+          command = '';
+        }
+      }
+      if (command || autoRun) {
+        detail = {
+          ...detail,
+          at_mention_run: {
+            parent_comment_id: commentId,
+            installed_image: { id: imageId },
+            source: autoRun ? 'auto_run' : 'at_mention',
+            ...(command ? { trigger_comment: { id: commentId, content: command } } : {}),
+          },
+        };
+      }
+    }
   }
 
   const atSource = String(detail?.at_mention_run?.source || '').trim().toLowerCase();
@@ -93,6 +125,7 @@ export async function runPostBootstrapAgentKickoff(opts) {
         layerId,
         createJobFn,
         ...(fsApi ? { fsApi } : {}),
+        ...(opts?.createAgentCommentFn ? { createAgentCommentFn: opts.createAgentCommentFn } : {}),
       });
       return { kind: 'at_mention', rec: rec || null };
     }
@@ -113,6 +146,7 @@ export async function runPostBootstrapAgentKickoff(opts) {
       ...(fsApi ? { fsApi } : {}),
       commentId: opts?.commentId,
       fetchCommentContent: opts?.fetchCommentContent || defaultFetchCommentContent,
+      ...(opts?.createAgentCommentFn ? { createAgentCommentFn: opts.createAgentCommentFn } : {}),
       log,
     });
     if (fallbackRec) {
@@ -125,6 +159,7 @@ export async function runPostBootstrapAgentKickoff(opts) {
     layerId,
     createJobFn,
     ...(fsApi ? { fsApi } : {}),
+    ...(opts?.createAgentCommentFn ? { createAgentCommentFn: opts.createAgentCommentFn } : {}),
     log,
   });
   return { kind: rec ? 'auto_run' : null, rec: rec || null };

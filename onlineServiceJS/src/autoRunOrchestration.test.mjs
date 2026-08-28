@@ -110,6 +110,37 @@ test('maybeStartAutoRunFirstInstruction creates job once when auto_run', async (
   assert.equal(calls.length, 1);
 });
 
+test('maybeStartAutoRunFirstInstruction creates agent comment when pack omits agent id', async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'autorun-'));
+  process.env.ONLINE_PROJECT_STATE_ROOT = tmp;
+  const jobs = [];
+  const creates = [];
+  const rec = await maybeStartAutoRunFirstInstruction({
+    detail: {
+      task: { auto_run: true, title: 'Fix', description: 'it', installed_image_id: 'img-1' },
+      at_mention_run: {
+        source: 'auto_run',
+        parent_comment_id: 'cmt-ar',
+        installed_image: { id: 'img-1' },
+      },
+    },
+    layerId: 'L',
+    createJobFn: async (body) => {
+      jobs.push(body);
+      return { id: 'job_ar', ...body };
+    },
+    createAgentCommentFn: async (opts) => {
+      creates.push(opts);
+      return { ok: true, id: 'agent-ar' };
+    },
+  });
+  assert.ok(rec);
+  assert.equal(creates.length, 1);
+  assert.equal(creates[0].source, 'auto_run');
+  assert.equal(jobs[0].mounted_agent_comment_id, 'agent-ar');
+  assert.equal(jobs[0].mounted_parent_comment_id, 'cmt-ar');
+});
+
 test('agentModelsEnvFromContextPack reads pack and at_mention_run', () => {
   assert.deepEqual(
     agentModelsEnvFromContextPack({

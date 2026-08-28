@@ -39,6 +39,30 @@ test('createEditRunAgentComment posts with X-Access-Token', async () => {
   assert.equal(body.context_pack.at_mention_run.source, 'edit_run');
 });
 
+test('createEditRunAgentComment posts at_mention source and agentModels', async () => {
+  const calls = [];
+  const result = await createEditRunAgentComment({
+    parentCommentId: 'p1',
+    installedImageId: 'img1',
+    accessToken: 'tok',
+    source: 'auto_run',
+    agentModels: [{ model: 'gpt-4.1-mini', provider: 'openai' }],
+    prefixFn: () => 'https://api.example/t/w/task/x/comment/cmt/cloud',
+    fetchFn: async (url, init) => {
+      calls.push(init);
+      return {
+        ok: true,
+        status: 201,
+        text: async () => JSON.stringify({ id: 'agent-ar' }),
+      };
+    },
+  });
+  assert.equal(result.ok, true);
+  const body = JSON.parse(calls[0].body);
+  assert.equal(body.context_pack.at_mention_run.source, 'auto_run');
+  assert.equal(body.context_pack.at_mention_run.agent_models[0].model, 'gpt-4.1-mini');
+});
+
 test('createEditRunAgentComment body 带 COMMENT_ID', async () => {
   const prev = process.env.COMMENT_ID;
   process.env.COMMENT_ID = 'cmt-a';

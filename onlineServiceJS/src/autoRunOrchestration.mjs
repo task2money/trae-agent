@@ -16,6 +16,7 @@ import { commitLayerGitWorkdirs } from './layerGitCommit.mjs';
 import { runLayerOauthRefreshPush } from './layerGitOauthRefreshPush.mjs';
 import { emitRuntimeEvent } from './runtimeEventLog.mjs';
 import { agentModelsEnvFromContextPack } from './autoRunAgentModelsEnv.mjs';
+import { createEditRunAgentComment } from './editRunAgentComment.mjs';
 
 export { agentModelsEnvFromContextPack } from './autoRunAgentModelsEnv.mjs';
 
@@ -198,10 +199,34 @@ export async function maybeStartAutoRunFirstInstruction(opts) {
     return null;
   }
 
-  const mountAgentId = String(detail?.at_mention_run?.agent_comment_id || '').trim();
+  let mountAgentId = String(detail?.at_mention_run?.agent_comment_id || '').trim();
   const mountParentId = String(detail?.at_mention_run?.parent_comment_id || '').trim();
   const mountFromAutoRun =
     String(detail?.at_mention_run?.source || '').trim().toLowerCase() === 'auto_run';
+  if (mountFromAutoRun && !mountAgentId && mountParentId) {
+    const imageId = String(
+      detail?.at_mention_run?.installed_image?.id ||
+        detail?.task?.installed_image_id ||
+        '',
+    ).trim();
+    if (imageId) {
+      const createFn = opts?.createAgentCommentFn || createEditRunAgentComment;
+      const created = await createFn({
+        parentCommentId: mountParentId,
+        installedImageId: imageId,
+        content: command,
+        source: 'auto_run',
+        agentModels: detail?.at_mention_run?.agent_models,
+      });
+      if (created?.ok && String(created.id || '').trim()) {
+        mountAgentId = String(created.id).trim();
+      } else {
+        log.warn?.(
+          `[onlineServiceJS] AUTO_RUN_AGENT_COMMENT_CREATE_FAILED detail=${String(created?.detail || '').slice(0, 200)}`,
+        );
+      }
+    }
+  }
 
   const agentEnv = agentModelsEnvFromContextPack(detail);
   emitRuntimeEvent('AUTO_RUN_FIRST_INSTRUCTION_START', {

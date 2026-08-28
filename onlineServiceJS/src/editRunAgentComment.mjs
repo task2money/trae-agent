@@ -55,6 +55,15 @@ export async function createEditRunAgentComment(opts = {}) {
   const fetchFn = opts?.fetchFn || fetch;
   const content =
     String(opts?.content || '').trim() || '修改指令后执行：交付中…';
+  const source = String(opts?.source || 'edit_run').trim() || 'edit_run';
+  const atMentionRun = {
+    source,
+    parent_comment_id: parentCommentId,
+    installed_image: { id: installedImageId },
+  };
+  if (Array.isArray(opts?.agentModels) && opts.agentModels.length > 0) {
+    atMentionRun.agent_models = opts.agentModels;
+  }
   try {
     const r = await fetchFn(url, {
       method: 'POST',
@@ -68,10 +77,7 @@ export async function createEditRunAgentComment(opts = {}) {
         installed_image_id: installedImageId,
         content,
         context_pack: {
-          at_mention_run: {
-            source: 'edit_run',
-            parent_comment_id: parentCommentId,
-          },
+          at_mention_run: atMentionRun,
         },
       })),
     });
@@ -94,9 +100,10 @@ export async function createEditRunAgentComment(opts = {}) {
     if (!id) {
       return { ok: false, detail: 'create_missing_id', url };
     }
-    emitRuntimeEvent('EDIT_RUN_AGENT_COMMENT_CREATED', {
-      fields: { agent_comment_id: id, parent_comment_id: parentCommentId },
-      consoleLine: `[onlineServiceJS] EDIT_RUN_AGENT_COMMENT_CREATED agent_comment_id=${id} parent_comment_id=${parentCommentId}`,
+    const eventName = source === 'edit_run' ? 'EDIT_RUN_AGENT_COMMENT_CREATED' : 'CONTAINER_AGENT_COMMENT_CREATED';
+    emitRuntimeEvent(eventName, {
+      fields: { agent_comment_id: id, parent_comment_id: parentCommentId, source },
+      consoleLine: `[onlineServiceJS] ${eventName} agent_comment_id=${id} parent_comment_id=${parentCommentId} source=${source}`,
     });
     return { ok: true, id, url };
   } catch (e) {
