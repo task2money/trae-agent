@@ -48,6 +48,16 @@ PORT="${PORT:-8765}"
 export PORT
 export ACCESS_TOKEN="${ACCESS_TOKEN:-dev-local-token}"
 
+_console_token_label() {
+  # 控制台 URL 不再携带完整 ACCESS_TOKEN：dev 默认值可显示，其余一律脱敏，
+  # 防止容器注入的真实令牌进入 stderr / CI 日志 / 录屏。完整地址写 runtime 文件。
+  if [[ -z "${ACCESS_TOKEN:-}" || "${ACCESS_TOKEN}" == "dev-local-token" ]]; then
+    printf '%s' "${ACCESS_TOKEN:-dev-local-token}"
+  else
+    printf '%s' '<redacted>'
+  fi
+}
+
 _local_no_proxy="localhost,127.0.0.1,::1"
 export NO_PROXY="${_local_no_proxy}${NO_PROXY:+,${NO_PROXY}}"
 export no_proxy="${_local_no_proxy}${no_proxy:+,${no_proxy}}"
@@ -174,13 +184,19 @@ _docker_port_file="${STATE_ROOT}/runtime/.docker_mapped_port"
 echo -n "$HOST_PORT" > "$_docker_port_file"
 echo "[run.sh] Docker 随机映射端口: localhost:${HOST_PORT} -> 容器:${PORT}" >&2
 echo "[run.sh] 映射端口记录在: ${_docker_port_file}" >&2
+_console_token="$(_console_token_label)"
 _ui_scope_t="${tenantId:-${TENANT_ID:-}}"
 _ui_scope_w="${workspaceId:-${WORKSPACE_ID:-}}"
 _ui_scope_task="${taskId:-${TASK_ID:-}}"
 if [[ -n "$_ui_scope_t" && -n "$_ui_scope_w" && -n "$_ui_scope_task" ]]; then
-  echo "[run.sh] 控制台: http://127.0.0.1:${HOST_PORT}/ui/tenant/${_ui_scope_t}/workspace/${_ui_scope_w}/task/${_ui_scope_task}/${ACCESS_TOKEN}" >&2
+  echo "[run.sh] 控制台: http://127.0.0.1:${HOST_PORT}/ui/tenant/${_ui_scope_t}/workspace/${_ui_scope_w}/task/${_ui_scope_task}/${_console_token}" >&2
+  printf '%s\n' "http://127.0.0.1:${HOST_PORT}/ui/tenant/${_ui_scope_t}/workspace/${_ui_scope_w}/task/${_ui_scope_task}/${ACCESS_TOKEN}" > "${STATE_ROOT}/runtime/.console_url"
 else
-  echo "[run.sh] 控制台: http://127.0.0.1:${HOST_PORT}/ui/${ACCESS_TOKEN}" >&2
+  echo "[run.sh] 控制台: http://127.0.0.1:${HOST_PORT}/ui/${_console_token}" >&2
+  printf '%s\n' "http://127.0.0.1:${HOST_PORT}/ui/${ACCESS_TOKEN}" > "${STATE_ROOT}/runtime/.console_url"
+fi
+if [[ "${ACCESS_TOKEN:-}" != "dev-local-token" ]]; then
+  echo "[run.sh] 可点击控制台地址（含令牌）: ${STATE_ROOT}/runtime/.console_url" >&2
 fi
 
 docker run --rm -i --privileged \
@@ -213,13 +229,19 @@ if [[ ! -d node_modules ]]; then
 fi
 
 echo "[run.sh] REPO_ROOT=$REPO_ROOT PORT=$PORT ACCESS_TOKEN=(set)" >&2
+_console_token="$(_console_token_label)"
 _ui_scope_t="${tenantId:-${TENANT_ID:-}}"
 _ui_scope_w="${workspaceId:-${WORKSPACE_ID:-}}"
 _ui_scope_task="${taskId:-${TASK_ID:-}}"
 if [[ -n "$_ui_scope_t" && -n "$_ui_scope_w" && -n "$_ui_scope_task" ]]; then
-  echo "[run.sh] 控制台: http://127.0.0.1:${PORT}/ui/tenant/${_ui_scope_t}/workspace/${_ui_scope_w}/task/${_ui_scope_task}/${ACCESS_TOKEN}" >&2
+  echo "[run.sh] 控制台: http://127.0.0.1:${PORT}/ui/tenant/${_ui_scope_t}/workspace/${_ui_scope_w}/task/${_ui_scope_task}/${_console_token}" >&2
+  printf '%s\n' "http://127.0.0.1:${PORT}/ui/tenant/${_ui_scope_t}/workspace/${_ui_scope_w}/task/${_ui_scope_task}/${ACCESS_TOKEN}" > "${STATE_ROOT}/runtime/.console_url"
 else
-  echo "[run.sh] 控制台: http://127.0.0.1:${PORT}/ui/${ACCESS_TOKEN}" >&2
+  echo "[run.sh] 控制台: http://127.0.0.1:${PORT}/ui/${_console_token}" >&2
+  printf '%s\n' "http://127.0.0.1:${PORT}/ui/${ACCESS_TOKEN}" > "${STATE_ROOT}/runtime/.console_url"
+fi
+if [[ "${ACCESS_TOKEN:-}" != "dev-local-token" ]]; then
+  echo "[run.sh] 可点击控制台地址（含令牌）: ${STATE_ROOT}/runtime/.console_url" >&2
 fi
 
 _pids="$(lsof -nP -iTCP:"${PORT}" -sTCP:LISTEN -t 2>/dev/null || true)"
