@@ -23,6 +23,7 @@ import { appendGitPushReqLog } from './outboundReqLog.mjs';
 import { createGithubPullRequest, createGitlabMergeRequest } from './layerGitOauthPushPr.mjs';
 import { formatOauthMultiRepoPushDetail } from './layerGitOauthPushDetail.mjs';
 import { canonicalRepoKey, repoMatchKeyFromUrl } from './repoMatchKey.mjs';
+import { gitPushHeadRetryOnNonFastForward } from './layerGitOauthPushNonFf.mjs';
 
 export { createGitlabMergeRequest } from './layerGitOauthPushPr.mjs';
 export { formatOauthMultiRepoPushDetail } from './layerGitOauthPushDetail.mjs';
@@ -377,7 +378,12 @@ export async function runLayerGithubOauthAccessPush(opts) {
         `oauth layer_id=${layerId} slug=${slug} rel_prefix=${String(row.relPrefix || '').slice(0, 160)} run ${cmdLine}`,
       );
       try {
-        await runGitExec(pushArgs, row.workdir, pushEnv);
+        await gitPushHeadRetryOnNonFastForward(runGitExec, {
+          httpsRemote,
+          dstRef,
+          workdir: row.workdir,
+          env: pushEnv,
+        });
         item.push_ok = true;
         // URL remote 推送不会更新 origin/<branch>；对齐 @{u}..HEAD 以便层快照 ahead 归零
         markOriginRemoteTrackingToHead(row.workdir, dstRef);
