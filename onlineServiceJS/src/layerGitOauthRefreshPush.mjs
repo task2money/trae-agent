@@ -143,7 +143,7 @@ export async function runLayerOauthRefreshPush(opts) {
     );
     const payload = {
       ok: false,
-      detail: `从 task2app 拉取 GitHub AccessToken 失败：${String(e?.message || e).slice(0, 500)}`,
+      detail: `从 task2app 拉取 Git OAuth AccessToken 失败：${String(e?.message || e).slice(0, 500)}`,
     };
     rememberLayerLastPushError(layerId, payload.detail, { traceId });
     return {

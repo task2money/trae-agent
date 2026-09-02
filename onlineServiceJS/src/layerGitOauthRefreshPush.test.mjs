@@ -116,7 +116,7 @@ describe('layerGitOauthRefreshPush', () => {
       targetBranch: 'feature/timeout-low',
     });
     assert.equal(httpStatus, 502);
-    assert.match(String(payload?.detail || ''), /拉取 GitHub AccessToken 失败/);
+    assert.match(String(payload?.detail || ''), /拉取 Git OAuth AccessToken 失败/);
     const log = fs.readFileSync(gitPushLog, 'utf8');
     assert.match(log, /oauth-refresh-push begin/);
     assert.match(log, /oauth-refresh-push token-fetch/);
