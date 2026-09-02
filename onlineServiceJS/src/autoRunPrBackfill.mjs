@@ -162,12 +162,13 @@ export async function completeMountedAgentComment(opts) {
  */
 export async function backfillAutoRunPrToAgentComment(opts = {}) {
   const agentCommentId = String(opts?.agentCommentId || '').trim();
-  if (!agentCommentId) {
-    return { ok: false, skipped: true, reason: 'no_agent_comment_id' };
-  }
   const urls = extractPrUrlsFromPushResult(opts?.pushResult, {
     rememberedPrUrl: opts?.rememberedPrUrl,
   });
+  const parentCommentId = String(opts?.parentCommentId || '').trim();
+  if (!agentCommentId && !(urls.length && parentCommentId)) {
+    return { ok: false, skipped: true, reason: 'no_agent_comment_id' };
+  }
   const prText = composeAutoRunPrBackfillReply({
     urls,
     skippedClean: Boolean(opts?.skippedClean),
@@ -178,32 +179,37 @@ export async function backfillAutoRunPrToAgentComment(opts = {}) {
   const prior = String(opts?.priorAssistantResponse || '').trim();
   const text = prior ? `${prior}\n\n${prText}` : prText;
   const completeFn = opts?.completeFn || completeMountedAgentComment;
-  const result = await completeFn({
-    agentCommentId,
-    assistantResponse: text,
-    accessToken: opts?.accessToken,
-    fetchFn: opts?.fetchFn,
-    prefixFn: opts?.prefixFn,
-    readTokenFn: opts?.readTokenFn,
-  });
-  if (result.ok) {
-    emitRuntimeEvent('AUTO_RUN_PR_BACKFILL_OK', {
-      fields: {
-        agent_comment_id: agentCommentId,
-        pr_count: urls.length,
-      },
-      consoleLine: `[onlineServiceJS] AUTO_RUN_PR_BACKFILL_OK agent_comment_id=${agentCommentId} pr_count=${urls.length}`,
-    });
-  } else {
-    emitRuntimeEvent('AUTO_RUN_PR_BACKFILL_FAILED', {
-      level: 'warn',
-      message: String(result.detail || 'failed').slice(0, 240),
-      fields: { agent_comment_id: agentCommentId },
-      consoleLine: `[onlineServiceJS] AUTO_RUN_PR_BACKFILL_FAILED agent_comment_id=${agentCommentId} detail=${String(result.detail || '').slice(0, 240)}`,
+  let result = { ok: true, skipped: true, reason: 'no_agent_comment_id' };
+  if (agentCommentId) {
+    result = await completeFn({
+      agentCommentId,
+      assistantResponse: text,
+      accessToken: opts?.accessToken,
+      fetchFn: opts?.fetchFn,
+      prefixFn: opts?.prefixFn,
+      readTokenFn: opts?.readTokenFn,
     });
   }
+  if (agentCommentId) {
+    if (result.ok) {
+      emitRuntimeEvent('AUTO_RUN_PR_BACKFILL_OK', {
+        fields: {
+          agent_comment_id: agentCommentId,
+          pr_count: urls.length,
+        },
+        consoleLine: `[onlineServiceJS] AUTO_RUN_PR_BACKFILL_OK agent_comment_id=${agentCommentId} pr_count=${urls.length}`,
+      });
+    } else {
+      emitRuntimeEvent('AUTO_RUN_PR_BACKFILL_FAILED', {
+        level: 'warn',
+        message: String(result.detail || 'failed').slice(0, 240),
+        fields: { agent_comment_id: agentCommentId },
+        consoleLine: `[onlineServiceJS] AUTO_RUN_PR_BACKFILL_FAILED agent_comment_id=${agentCommentId} detail=${String(result.detail || '').slice(0, 240)}`,
+      });
+    }
+  }
   let gitPrReplies = null;
-  if (result.ok && urls.length) {
+  if (urls.length) {
     const recordFn = opts?.recordGitPrReplyFn || recordAutoRunGitPrReplyComments;
     try {
       gitPrReplies = await recordFn({

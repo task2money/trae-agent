@@ -166,6 +166,33 @@ test('triggerAutoRunDeliveryForJob backfills delivery failure into mounted agent
   assert.equal(backfillOpts.agentCommentId, 'agent-fail');
 });
 
+test('triggerAutoRunDeliveryForJob backfills git_pr reply using parent comment only', async () => {
+  let backfillOpts = null;
+  const result = await triggerAutoRunDeliveryForJob(
+    {
+      layer_id: 'L-parent-only',
+      auto_run_first: true,
+      mounted_parent_comment_id: 'cmt-auto',
+    },
+    {
+      lastBootstrapTaskDetail: { task: { title: 'T', target_branch: 'feat/x', auto_run: true } },
+      runAutoRunDelivery: async () => ({
+        ok: true,
+        pushResult: {
+          payload: { repos: [{ pr: { html_url: 'https://gitlab.example/a/b/-/merge_requests/27' } }] },
+        },
+      }),
+      backfillAutoRunPrToAgentComment: async (opts) => {
+        backfillOpts = opts;
+        return { ok: true, urls: ['https://gitlab.example/a/b/-/merge_requests/27'] };
+      },
+    },
+  );
+  assert.equal(result.ok, true);
+  assert.equal(backfillOpts.agentCommentId, '');
+  assert.equal(backfillOpts.parentCommentId, 'cmt-auto');
+});
+
 test('triggerAutoRunDeliveryForJob persists last_push_error for ztree', async () => {
   const remembered = [];
   const cleared = [];
@@ -190,6 +217,7 @@ test('triggerAutoRunDeliveryForJob persists last_push_error for ztree', async ()
       clearLayerLastPushError: (layerId) => {
         cleared.push(layerId);
       },
+      backfillAutoRunPrToAgentComment: async () => ({ skipped: true }),
     },
   );
   assert.equal(remembered.length, 1);

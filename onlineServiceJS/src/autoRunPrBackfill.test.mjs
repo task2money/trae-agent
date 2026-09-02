@@ -141,9 +141,34 @@ test('backfillAutoRunPrToAgentComment uses rememberedPrUrl when payload has no r
   assert.match(saw.assistantResponse, /merge_requests\/9/);
 });
 
-test('backfillAutoRunPrToAgentComment skips without agent id', async () => {
+test('backfillAutoRunPrToAgentComment skips without agent id and without parent PR', async () => {
   const out = await backfillAutoRunPrToAgentComment({ agentCommentId: '' });
   assert.equal(out.skipped, true);
+});
+
+test('backfillAutoRunPrToAgentComment records git_pr reply without agent comment', async () => {
+  let completeCalled = false;
+  let replyOpts = null;
+  const out = await backfillAutoRunPrToAgentComment({
+    agentCommentId: '',
+    parentCommentId: 'cmt-exec',
+    pushResult: {
+      payload: { repos: [{ pr: { html_url: 'https://gitlab.example/a/b/-/merge_requests/27' } }] },
+    },
+    completeFn: async () => {
+      completeCalled = true;
+      return { ok: true };
+    },
+    recordGitPrReplyFn: async (opts) => {
+      replyOpts = opts;
+      return { ok: true, replies: [{ ok: true, html_url: opts.urls[0] }] };
+    },
+  });
+  assert.equal(completeCalled, false);
+  assert.equal(out.ok, true);
+  assert.deepEqual(replyOpts.urls, ['https://gitlab.example/a/b/-/merge_requests/27']);
+  assert.equal(replyOpts.parentCommentId, 'cmt-exec');
+  assert.equal(out.git_pr_replies.ok, true);
 });
 
 test('backfillAutoRunPrToAgentComment appends PR after prior stream text', async () => {
