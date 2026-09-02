@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { canonicalRepoKey, repoMatchKeyFromUrl } from './repoMatchKey.mjs';
+import { repoMatchKeyFromUrl as repoMatchKeyFromHelpers } from './layerGitRouteHelpers.mjs';
 
 test('repoMatchKeyFromUrl strips scheme and .git', () => {
   assert.equal(
@@ -21,6 +22,13 @@ test('repoMatchKeyFromUrl equates ssh:// and git@ without ssh port', () => {
   );
 });
 
+
+test('layerGitRouteHelpers re-exports repoMatchKeyFromUrl', () => {
+  assert.equal(
+    repoMatchKeyFromHelpers('ssh://git@gitlab.example.com:2222/g/p.git'),
+    repoMatchKeyFromUrl('git@gitlab.example.com:g/p.git'),
+  );
+});
 
 test('canonicalRepoKey keeps scheme and lowercases', () => {
   assert.equal(
