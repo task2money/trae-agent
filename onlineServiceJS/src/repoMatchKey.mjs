@@ -27,7 +27,8 @@ export function repoMatchKeyFromUrl(u) {
     const x = new URL(raw);
     let pth = (x.pathname || '/').replace(/\/+$/, '').replace(/\.git$/i, '');
     if (pth.startsWith('/')) pth = pth.slice(1);
-    return `${x.host.toLowerCase()}/${pth}`.toLowerCase();
+    const host = x.protocol === 'ssh:' ? x.hostname : x.host;
+    return `${host.toLowerCase()}/${pth}`.toLowerCase();
   } catch {
     return raw
       .toLowerCase()
