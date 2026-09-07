@@ -212,3 +212,21 @@ test('completeMountedAgentComment body 带 COMMENT_ID', async () => {
     else process.env.COMMENT_ID = prev;
   }
 });
+
+test('backfillAutoRunPrToAgentComment parent-only failure does not skip', async () => {
+  const out = await backfillAutoRunPrToAgentComment({
+    parentCommentId: 'cmt-exec',
+    failed: true,
+    detail: '推送成功但未创建 PR/MR（merge_target=main）',
+    completeFn: async () => {
+      throw new Error('should not complete agent');
+    },
+    recordGitPrReplyFn: async () => {
+      throw new Error('should not record git_pr without urls');
+    },
+  });
+  assert.equal(out.ok, true);
+  assert.equal(out.skipped, true);
+  assert.match(out.text, /未创建 PR|失败/);
+  assert.deepEqual(out.urls, []);
+});

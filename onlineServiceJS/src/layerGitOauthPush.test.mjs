@@ -283,3 +283,141 @@ test('createGitlabMergeRequest: 将 web_url 映射为可用审查链接', async 
     globalThis.fetch = origFetch;
   }
 });
+
+test('runLayerGithubOauthAccessPush: 配置 prBase 但创建 PR 失败时返回 400（不锁 delivery done）', async () => {
+  const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'oauth-push-pr-missing-'));
+  process.env.ONLINE_PROJECT_STATE_ROOT = stateRoot;
+  const layerId = 'oauth-push-pr-missing-layer';
+  const layerDir = path.join(stateRoot, 'layers', layerId);
+  const repoDir = path.join(layerDir, 'helloworld');
+  fs.mkdirSync(repoDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(layerDir, 'layer_meta.json'),
+    JSON.stringify({ layer_id: layerId, kind: 'workspace' }),
+  );
+  assert.equal(spawnSync('git', ['init'], { cwd: repoDir, encoding: 'utf8' }).status, 0);
+  assert.equal(
+    spawnSync(
+      'git',
+      ['remote', 'add', 'origin', 'https://gitlab-tencent-sh-1.aidevpush.com/ceshi/helloworld.git'],
+      { cwd: repoDir, encoding: 'utf8' },
+    ).status,
+    0,
+  );
+  assert.equal(
+    spawnSync('git', ['config', 'user.email', 'e2e@test'], { cwd: repoDir, encoding: 'utf8' }).status,
+    0,
+  );
+  assert.equal(
+    spawnSync('git', ['config', 'user.name', 'e2e'], { cwd: repoDir, encoding: 'utf8' }).status,
+    0,
+  );
+  fs.writeFileSync(path.join(repoDir, 'now.md'), 't\n');
+  assert.equal(spawnSync('git', ['add', 'now.md'], { cwd: repoDir, encoding: 'utf8' }).status, 0);
+  assert.equal(
+    spawnSync('git', ['commit', '-m', 'now'], { cwd: repoDir, encoding: 'utf8' }).status,
+    0,
+  );
+
+  const { runLayerGithubOauthAccessPush } = await import(
+    `./layerGitOauthPush.mjs?prmiss=${Date.now()}`
+  );
+  const { httpStatus, payload } = await runLayerGithubOauthAccessPush({
+    layerId,
+    targetBranch: 'feature/now',
+    prBaseBranch: 'main',
+    oauthAuthByRepo: {
+      'https://gitlab-tencent-sh-1.aidevpush.com/ceshi/helloworld': {
+        provider: 'gitlab',
+        access_token: 'glpat-test',
+      },
+    },
+    gitExecAsync: async () => undefined,
+    createPullOrMergeRequestWithBaseFallback: async () => ({
+      ok: false,
+      pr: null,
+      pr_error: 'main:404 | master:404',
+      basesTried: ['main', 'master'],
+    }),
+  });
+
+  assert.equal(httpStatus, 400);
+  assert.equal(payload?.ok, false);
+  assert.match(String(payload?.detail || ''), /未创建 PR\/MR/);
+  assert.equal(payload?.github_oauth_multirepo?.repos?.[0]?.push_ok, true);
+  assert.match(String(payload?.github_oauth_multirepo?.repos?.[0]?.pr_error || ''), /main:404/);
+
+  fs.rmSync(stateRoot, { recursive: true, force: true });
+});
+
+test('runLayerGithubOauthAccessPush: prBase 回退成功时仍 200 且带回 PR', async () => {
+  const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'oauth-push-pr-fallback-'));
+  process.env.ONLINE_PROJECT_STATE_ROOT = stateRoot;
+  const layerId = 'oauth-push-pr-fallback-layer';
+  const layerDir = path.join(stateRoot, 'layers', layerId);
+  const repoDir = path.join(layerDir, 'helloworld');
+  fs.mkdirSync(repoDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(layerDir, 'layer_meta.json'),
+    JSON.stringify({ layer_id: layerId, kind: 'workspace' }),
+  );
+  assert.equal(spawnSync('git', ['init'], { cwd: repoDir, encoding: 'utf8' }).status, 0);
+  assert.equal(
+    spawnSync(
+      'git',
+      ['remote', 'add', 'origin', 'https://gitlab-tencent-sh-1.aidevpush.com/ceshi/helloworld.git'],
+      { cwd: repoDir, encoding: 'utf8' },
+    ).status,
+    0,
+  );
+  assert.equal(
+    spawnSync('git', ['config', 'user.email', 'e2e@test'], { cwd: repoDir, encoding: 'utf8' }).status,
+    0,
+  );
+  assert.equal(
+    spawnSync('git', ['config', 'user.name', 'e2e'], { cwd: repoDir, encoding: 'utf8' }).status,
+    0,
+  );
+  fs.writeFileSync(path.join(repoDir, 'now.md'), 't2\n');
+  assert.equal(spawnSync('git', ['add', 'now.md'], { cwd: repoDir, encoding: 'utf8' }).status, 0);
+  assert.equal(
+    spawnSync('git', ['commit', '-m', 'now2'], { cwd: repoDir, encoding: 'utf8' }).status,
+    0,
+  );
+
+  const { runLayerGithubOauthAccessPush } = await import(
+    `./layerGitOauthPush.mjs?prfb=${Date.now()}`
+  );
+  const { httpStatus, payload } = await runLayerGithubOauthAccessPush({
+    layerId,
+    targetBranch: 'feature/now2',
+    prBaseBranch: 'main',
+    oauthAuthByRepo: {
+      'https://gitlab-tencent-sh-1.aidevpush.com/ceshi/helloworld': {
+        provider: 'gitlab',
+        access_token: 'glpat-test',
+      },
+    },
+    gitExecAsync: async () => undefined,
+    createPullOrMergeRequestWithBaseFallback: async () => ({
+      ok: true,
+      pr: {
+        html_url: 'https://gitlab-tencent-sh-1.aidevpush.com/ceshi/helloworld/-/merge_requests/3',
+        number: 3,
+        provider: 'gitlab',
+        base_branch: 'master',
+      },
+      pr_error: null,
+      basesTried: ['main', 'master'],
+    }),
+  });
+
+  assert.equal(httpStatus, 200);
+  assert.equal(payload?.ok, true);
+  assert.equal(
+    payload?.github_oauth_multirepo?.repos?.[0]?.pr?.html_url,
+    'https://gitlab-tencent-sh-1.aidevpush.com/ceshi/helloworld/-/merge_requests/3',
+  );
+
+  fs.rmSync(stateRoot, { recursive: true, force: true });
+});

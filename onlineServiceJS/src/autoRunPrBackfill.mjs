@@ -166,7 +166,8 @@ export async function backfillAutoRunPrToAgentComment(opts = {}) {
     rememberedPrUrl: opts?.rememberedPrUrl,
   });
   const parentCommentId = String(opts?.parentCommentId || '').trim();
-  if (!agentCommentId && !(urls.length && parentCommentId)) {
+  const failed = Boolean(opts?.failed);
+  if (!agentCommentId && !(urls.length && parentCommentId) && !(failed && parentCommentId)) {
     return { ok: false, skipped: true, reason: 'no_agent_comment_id' };
   }
   const prText = composeAutoRunPrBackfillReply({
@@ -207,6 +208,14 @@ export async function backfillAutoRunPrToAgentComment(opts = {}) {
         consoleLine: `[onlineServiceJS] AUTO_RUN_PR_BACKFILL_FAILED agent_comment_id=${agentCommentId} detail=${String(result.detail || '').slice(0, 240)}`,
       });
     }
+  } else if (failed && parentCommentId && !urls.length) {
+    // 无挂载 Agent 时仍发出失败文案事件，便于 Loki 对照；git_pr 回帖需 URL
+    emitRuntimeEvent('AUTO_RUN_PR_BACKFILL_FAILED', {
+      level: 'warn',
+      message: String(opts?.detail || prText || 'delivery_failed').slice(0, 240),
+      fields: { parent_comment_id: parentCommentId, pr_count: 0 },
+      consoleLine: `[onlineServiceJS] AUTO_RUN_PR_BACKFILL_FAILED parent_comment_id=${parentCommentId} detail=${String(opts?.detail || prText || '').slice(0, 240)}`,
+    });
   }
   let gitPrReplies = null;
   if (urls.length) {

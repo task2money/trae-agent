@@ -20,10 +20,14 @@ import {
 } from './layerFsGitLastPushError.mjs';
 import { workdirNeedsPush } from './layerGitCommit.mjs';
 import { appendGitPushReqLog } from './outboundReqLog.mjs';
-import { createGithubPullRequest, createGitlabMergeRequest } from './layerGitOauthPushPr.mjs';
+import { createGitlabMergeRequest } from './layerGitOauthPushPr.mjs';
 import { formatOauthMultiRepoPushDetail } from './layerGitOauthPushDetail.mjs';
 import { canonicalRepoKey, repoMatchKeyFromUrl } from './repoMatchKey.mjs';
 import { gitPushHeadRetryOnNonFastForward } from './layerGitOauthPushNonFf.mjs';
+import {
+  createPullOrMergeRequestWithBaseFallback,
+  emitPrExpectedMissingEvent,
+} from './layerGitOauthPushCreatePr.mjs';
 
 export { createGitlabMergeRequest } from './layerGitOauthPushPr.mjs';
 export { formatOauthMultiRepoPushDetail } from './layerGitOauthPushDetail.mjs';
@@ -400,48 +404,25 @@ export async function runLayerGithubOauthAccessPush(opts) {
         continue;
       }
 
-      if (provider === 'github' && baseName && headName && baseName !== headName) {
-        const prRes = await createGithubPullRequest({
-          owner: slugInfo.owner,
-          repo: slugInfo.repo,
-          head: headName,
-          base: baseName,
-          accessToken: repoToken,
-          title: prTitle,
-          bodyText: prBody,
-        });
-        if (prRes.ok && prRes.json) {
-          item.pr = {
-            html_url: prRes.json.html_url || '',
-            number: prRes.json.number,
-            state: prRes.json.state,
-          };
-        } else {
-          item.pr_error = prRes.text || `http_${prRes.status}`;
-        }
-      } else if (provider === 'gitlab' && baseName && headName && baseName !== headName) {
-        const glOwner = gitlabInfo?.owner || slugInfo?.owner;
-        const glRepo = gitlabInfo?.repo || slugInfo?.repo;
-        const prRes = await createGitlabMergeRequest({
+      if (baseName && headName && baseName !== headName && (provider === 'github' || provider === 'gitlab')) {
+        const createPr =
+          opts.createPullOrMergeRequestWithBaseFallback || createPullOrMergeRequestWithBaseFallback;
+        const prOut = await createPr({
+          provider,
           originUrl: originUrl || httpsRemote,
-          owner: glOwner,
-          repo: glRepo,
-          head: headName,
-          base: baseName,
-          accessToken: repoToken,
-          title: prTitle,
-          bodyText: prBody,
+          httpsRemote,
+          slugInfo,
+          gitlabInfo,
+          headName,
+          baseName,
+          repoToken,
+          prTitle,
+          prBody,
         });
-        if (prRes.ok && prRes.json) {
-          const webUrl = String(prRes.json.web_url || prRes.json.html_url || '').trim();
-          item.pr = {
-            html_url: webUrl,
-            number: prRes.json.iid ?? prRes.json.id,
-            state: prRes.json.state,
-            provider: 'gitlab',
-          };
+        if (prOut.ok && prOut.pr) {
+          item.pr = prOut.pr;
         } else {
-          item.pr_error = prRes.text || `http_${prRes.status}`;
+          item.pr_error = prOut.pr_error || 'pr_create_failed';
         }
       }
       repos.push(item);
@@ -474,6 +455,27 @@ export async function runLayerGithubOauthAccessPush(opts) {
       },
     };
   }
+  // merge_target 已配置时：仅 push、无 PR 视为交付失败（避免 AUTO_RUN_DELIVERY_COMPLETE 锁死重试）
+  const prMissingDetail = emitPrExpectedMissingEvent(repos, {
+    prBaseBranch,
+    headName,
+    layerId,
+  });
+  if (prMissingDetail) {
+    rememberLayerLastPushError(layerId, prMissingDetail);
+    appendGitPushReqLog(
+      `oauth layer_id=${layerId} fail reason=pr_missing detail=${prMissingDetail.slice(0, 240)}`,
+    );
+    return {
+      httpStatus: 400,
+      payload: {
+        ok: false,
+        detail: prMissingDetail,
+        github_oauth_multirepo: { repos },
+      },
+    };
+  }
+
   appendGitPushReqLog(`oauth layer_id=${layerId} done ok repos=${repos.length}`);
   const firstPrUrl = repos
     .map((r) => (r?.pr && typeof r.pr.html_url === 'string' ? r.pr.html_url.trim() : ''))
