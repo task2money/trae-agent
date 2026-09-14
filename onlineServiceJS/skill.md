@@ -23,7 +23,7 @@
 | 启动路径 | Docker 网络 | 宿主机如何访问容器内端口 |
 |---------|-------------|-------------------------|
 | **云 VM UserData**（镜像市场模板 → `/root/init_from_task2app.sh`） | 平台「生成容器脚本」硬编码 **`--network host`**，**无 `-p`** | 与宿主机同网卡命名空间；`HOST_PORT`/`BUSINESS_HOST_PORT`（默认 8765）只用于脚本内监听探测与 `BUSINESS_API_ENDPOINT=http://<公网IP>:端口/api` 推导，**不是** `docker -p` |
-| `go_relayToTrae` 选镜像 | **`--network host`** | 同上（本地对齐云路径） |
+| ~~本机 `go_relayToTrae`~~（ADR-0073 已下线） | — | 容器仅云 UserData + registry；勿再依赖本地 sidecar |
 | 本机 `run.sh` 且 `TRAE_ONLINE_JS_DOCKER=1` | bridge + **仅** `-p 127.0.0.1:${HOST_PORT}:${PORT}` | **只映射 onlineServiceJS 的 HTTP 口**；**不会**自动 publish 容器内再拉起的 runAll/业务端口（9999/8003 等） |
 
 **UserData 核对要点**（机器节点真实启动面）：
@@ -61,7 +61,7 @@ Dockerfile 基于 **ubuntu:24.04**（可通过构建参数 `BASE_IMAGE` / 环境
    - **完整快照**：`[onlineServiceJS] feature-params-env pulled: {…}`
 4. 再转为 `service_config.yaml`
 
-`go_relayToTrae` 会转发子进程 stdout 到 `/v1/status` 的 `logs`（及 SSE status-push），因此任务详情「启动日志」面板可直接看到上述行。写日志失败不阻断 YAML 落盘。启动时进程环境快照仍见 **`logs/init.log`**（可选白名单 `INIT_LOG_ENV_KEYS`）；注意 init.log 在 listen 时落盘，**早于** feature-params 拉取，故 SCOPE 等键以 `feature-params-env pulled` 行为准。
+`stdout` 经容器 → 平台 `.../cloud/relay-to-trae/status-push`（及 SSE）上报，因此任务详情「启动日志」面板可直接看到上述行。写日志失败不阻断 YAML 落盘。启动时进程环境快照仍见 **`logs/init.log`**（可选白名单 `INIT_LOG_ENV_KEYS`）；注意 init.log 在 listen 时落盘，**早于** feature-params 拉取，故 SCOPE 等键以 `feature-params-env pulled` 行为准。本机 `go_relayToTrae` 侧车已按 ADR-0073 下线。
 
 **脱敏**（**默认开启**，生产必须脱敏；仅显式 `0/false/no/off` 关闭）：
 

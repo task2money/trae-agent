@@ -72,7 +72,7 @@ export function readPersistedRefreshToken() {
 }
 
 /**
- * 落盘容器换票结果，供 go_relayToTrae 在子进程换票后同步 status-push state
+ * 落盘容器换票结果，供云路径 / status-push 在子进程换票后同步 state
  *（与云主机路径一致：首次 exchange 由 onlineServiceJS 完成）。
  * @param {{ refreshToken: string, accessToken?: string, expiresAt?: string } | string} tokens
  * @returns {string | undefined} 写入路径；refresh 为空时不写盘并返回 undefined

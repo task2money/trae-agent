@@ -48,7 +48,7 @@
 
 #### 源码进容器路径（二级分类）
 ##### 镜像烘焙 vs 本地 overlay
-- 描述：`Dockerfile` 以 `COPY onlineServiceJS /app/onlineServiceJS/` **整树打入镜像**（`.dockerignore` 仅排除 `node_modules`）；**公网/云任务容器无 bind-mount**，新增 `src/*.mjs`（如 `layerFileContent.mjs`）必须重建并推送镜像后，**新建或重启任务容器**才有精确二进制属性。本地 `go_relayToTrae` selected_image 模式默认把 monorepo `trae-agent/onlineServiceJS/src` **整目录**挂到 `/app/onlineServiceJS/src:ro`（`RELAY_OVERLAY_ONLINE_SERVICE_SRC=0` 可关），无需等 registry。
+- 描述：`Dockerfile` 以 `COPY onlineServiceJS /app/onlineServiceJS/` **整树打入镜像**（`.dockerignore` 仅排除 `node_modules`）；**公网/云任务容器无 bind-mount**，新增 `src/*.mjs`（如 `layerFileContent.mjs`）必须重建并推送镜像后，**新建或重启任务容器**才有精确二进制属性。本机 `go_relayToTrae` selected_image overlay（ADR-0073）已下线——本地验证请用 `run.sh` / `TRAE_ONLINE_JS_DOCKER=1`，勿再依赖本地 sidecar 挂载 `src`。
 - 适用场景：改 onlineServiceJS 源码后判断「本地能否立刻生效 / 公网是否需推镜像」
 - 优先级：高
 - 验收（公网容器内）：
