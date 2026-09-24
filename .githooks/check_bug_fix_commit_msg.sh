@@ -3,13 +3,22 @@
 #
 # SSOT: .ai/01_project_constraints/41_bug_fix_unit_test_required.md
 # 根仓权威版: .githooks/commit-msg → db/scripts/ci/check_bug_fix_unit_tests.py（Python）
-# 本版本: 无 Python 依赖的 bash 移植，随子仓模板分发（db/scripts/hooks/templates/，
-#         由 deploy_repo_random_precommit.sh 复制到各子仓 scripts/hooks/，install.sh 安装）。
+# 本版本: 无 Python 依赖的 bash 移植；模板 SSOT 即本目录（scripts/hooks/templates/），
+#         由 scripts/deploy_repo_random_precommit.sh 分发到各子仓 .githooks/
+#         （install.sh 安装）。OPT-20260920-007：本注释此前把读者指向
+#         db/scripts/hooks/templates/，那份分叉副本已删除——改它不会到达任何子仓，
+#         而本地自测在错副本上照样全绿。判据见
+#         db/scripts/ci/check_hook_template_single_source.py。
 #
 # 判定：commit message 首行属于 bug 修复类（fix:/hotfix:/bugfix: 前缀、中文
 # "修复"/"修正"/"修 bug" 前缀、或 fix/bug 关键字），且暂存区包含业务源码时，
 # 必须存在与被修源码对应（同目录 / tests 镜像 / 文件名 stem 重叠）的单元测试，
-# 否则 exit 1 阻断提交。豁免：消息含 no-test:、无源码变更、仅测试变更。
+# 否则 exit 1 阻断提交。豁免：消息含独占一行的 no-test:、无源码变更、仅测试变更。
+#
+# OPT-20260920-004: e2e / Playwright 用例本身（*.playwright.test.*、*.e2e.test.*、
+#   *.integration.test.*、*.spec.e2e.*）**不算业务源码** —— 它们永远不会被
+#   is_unit_test_file 认作单元测试，若还要求它们「配单测」，任何 fix: 提交都
+#   结构性不可满足（只能改用 no-test: / test: / chore: 绕开，反而掩盖真缺陷）。
 #
 # 调用方式：
 #   check_bug_fix_commit_msg.sh [消息文件]          # commit-msg 钩子（$1）
@@ -47,7 +56,7 @@ is_unit_test_file() {
     return 1
   fi
   low="$(printf '%s' "$rel" | tr '[:upper:]' '[:lower:]')"
-  if [[ "$low" =~ \.(playwright\.test\.|e2e\.test\.|integration\.test\.|spec\.e2e\.) ]]; then
+  if [[ "$low" =~ $NON_UNIT_NAME_MARKERS ]]; then
     return 1
   fi
   if [[ "$name" == *_test.go ]]; then return 0; fi
@@ -63,7 +72,39 @@ is_source_file() {
   if is_unit_test_file "$rel"; then return 1; fi
   local low
   low="$(printf '%s' "$rel" | tr '[:upper:]' '[:lower:]')"
+  # OPT-20260920-004: e2e / Playwright 用例自带非单测标记，**不能**被当作
+  # 「需要配单测的业务源码」——它们永远无法被 is_unit_test_file 认作单测，
+  # 于是任何 fix: 提交都结构性不可满足（同目录 / e2e/tests 下的测试被判非单测，
+  # 走 stem 匹配又必然命中 .playwright.test. 标记）。判定与 is_unit_test_file 共用
+  # 同一份 NON_UNIT_NAME_MARKERS，防止两处漂移。
+  if [[ "$low" =~ $NON_UNIT_NAME_MARKERS ]]; then return 1; fi
   [[ "$low" =~ \.(go|py|js|jsx|ts|tsx|vue)$ ]]
+}
+
+# 豁免标记判定（OPT-20260920-006）：返回 0 且打印 reason 当且仅当消息中存在
+# **独占一行**的 `no-test:`（允许前导空白与列表项 `-`）。
+#
+# 此前判定是整条消息的子串匹配（`[[ "$message" == *"no-test:"* ]]`），于是**正文提及**
+# 该标记的提交——讨论门禁、写文档、以及修改门禁自身——都会静默自我豁免，
+# 「提到它」被当成了「使用它」。收紧为按行锚定后，散文/行内代码/引用行里的出现
+# 都不豁免：行内代码跨度必然以反引号起行或被前缀文字遮挡，锚定在行首即已排除。
+waiver_reason() {
+  local message="$1" line rest
+  while IFS= read -r line; do
+    rest="$line"
+    rest="${rest#"${rest%%[![:space:]]*}"}"        # 去行首空白
+    if [ "${rest:0:1}" = "-" ]; then               # 允许列表项前缀 '-'
+      rest="${rest:1}"
+      rest="${rest#"${rest%%[![:space:]]*}"}"
+    fi
+    case "$rest" in
+      no-test:*) ;;
+      *) continue ;;
+    esac
+    printf '%s' "${rest#no-test:}" | sed 's/^[[:space:]]*//'
+    return 0
+  done <<< "$message"
+  return 1
 }
 
 # src 是否与某个测试对应：同目录 / tests 镜像目录 / 测试文件名含 src stem
@@ -116,9 +157,8 @@ run_gate() {
     echo "OK: bug-fix commit touches no business source (docs/config/scripts/tests only) — exempt."
     return 0
   fi
-  if [[ "$message" == *"no-test:"* ]]; then
-    local reason=""
-    reason="$(printf '%s' "$message" | grep 'no-test:' | head -1 | sed 's/.*no-test:[[:space:]]*//')"
+  local reason=""
+  if reason="$(waiver_reason "$message")"; then
     echo "OK: explicit waiver \`no-test:\` present (${reason:-reason}) — exempt."
     return 0
   fi
@@ -175,12 +215,24 @@ self_test() {
   check_case 1 "中文 修正 前缀被识别" "修正: 空输入崩溃" $'app/parser.go'
   check_case 0 "fix + tests 镜像目录通过" "fix: 空输入 NPE" $'app/parser.go\napp/tests/test_parser.py'
   check_case 0 "fix + 前端 unit.test 通过" "fix: 按钮重复触发" $'app/Button.tsx\napp/Button.unit.test.ts'
-  check_case 0 "no-test 豁免" "fix: 手工验证场景 no-test: legacy vendor patch" $'app/parser.go'
+  # OPT-20260920-006：此前允许标记出现在主行/正文任意位置（子串匹配），
+  # 现要求独占一行；主行内联写法不豁免（门禁会提示正确写法）。
+  check_case 1 "主行内联 no-test: 不再豁免" "fix: 手工验证场景 no-test: legacy vendor patch" $'app/parser.go'
+  # OPT-20260920-006：豁免标记必须「独占一行」，正文提及不得自动豁免
+  check_case 0 "独立一行的 no-test: 豁免" $'fix: 手工验证场景\n\nno-test: legacy vendor patch' $'app/parser.go'
+  check_case 0 "列表项 - no-test: 豁免" $'fix: 手工验证场景\n\n- no-test: legacy vendor patch' $'app/parser.go'
+  check_case 1 "正文提及 no-test: 不豁免" $'fix: 收紧豁免判定\n\n原来消息里写 no-test: 就会短路豁免，这里说明该行为。' $'app/parser.go'
+  check_case 1 "行内代码引用 no-test: 不豁免" $'fix: 收紧豁免判定\n\n此前把 `no-test:` 当豁免通道。' $'app/parser.go'
   check_case 0 "仅文档变更豁免" "fix: 更新部署说明" $'README.md'
   check_case 0 "chore 前缀不被误伤" "chore: update deps" $'app/parser.go'
   check_case 0 "仅测试变更豁免" "fix: 补充用例" $'app/parser_test.go'
   check_case 1 "e2e 测试不算单测" "fix: NPE on empty input" $'app/parser.go\ne2e/parser.playwright.test.ts'
   check_case 0 "vue 源码 + 同名 spec 通过" "fix: 弹窗关闭异常" $'src/Modal.vue\nsrc/Modal.spec.ts'
+  # OPT-20260920-004：修 e2e 用例本身不得被要求配单测（否则结构性不可满足）
+  check_case 0 "仅 e2e 用例变更不算业务源码" "fix: 修正 e2e 断言" $'e2e/foo.playwright.test.js'
+  check_case 0 "非 e2e 目录的 playwright 用例同样豁免" "fix: 修正 playwright 剧本" $'src/foo.playwright.test.js'
+  check_case 0 "integration 用例同样豁免" "fix: 修正集成用例" $'src/db.integration.test.ts'
+  check_case 1 "e2e 豁免不覆盖同提交的真实源码" "fix: 修正 e2e 并同步按钮状态" $'e2e/foo.playwright.test.js\nsrc/Button.tsx'
   check_case 0 "feat + fix 关键字但非 fix 前缀" "feat: fix traceId propagation" $'app/trace.go'
 
   echo ""
