@@ -168,7 +168,7 @@ export function registerDiffLogMiscRoutes(api) {
       }
     }
 
-    const summary = await generateDiffSummary(diffLogs);
+    const summary = await generateDiffSummary(diffLogs, { req });
 
     const logContent = diffLogs
       .filter(d => d.has_changes)

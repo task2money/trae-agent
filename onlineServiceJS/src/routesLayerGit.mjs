@@ -274,7 +274,7 @@ export function registerLayerGitRoutes(api) {
       }
       let suggested_commit_message = '';
       try {
-        suggested_commit_message = await suggestStagedCommitMessage(gitExec, work);
+        suggested_commit_message = await suggestStagedCommitMessage(gitExec, work, { req });
       } catch (e) {
         console.error('[onlineServiceJS] suggestStagedCommitMessage:', e);
       }
