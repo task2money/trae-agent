@@ -72,7 +72,6 @@ def _usage_details(raw: object, container: str, field: str) -> int:
 
 def usage_from_openai_usage(raw: object) -> LLMUsage | None:
     """OpenAI 兼容回包的 usage → LLMUsage（缓存/推理不丢，口径与本仓 exclusive 约定对齐）。
-
     OpenAI 系（chat.completions 与 responses）的 prompt/input 计数**含**缓存命中，
     而本仓 `LLMUsage.input_tokens` 是不含缓存的那部分 —— Anthropic 客户端与平台网关的
     normalizeAuditUsage 都是这个口径。不减去命中数，同一份用量在两个 provider 上会一个
@@ -116,6 +115,28 @@ def usage_log_fields(usage: LLMUsage | None) -> dict[str, int]:
     if usage is None:
         return dict.fromkeys(USAGE_FIELDS, 0)
     return {name: _usage_int(getattr(usage, name, 0)) for name in USAGE_FIELDS}
+
+
+def usage_from_google_usage(raw: object) -> LLMUsage | None:
+    """Google `usage_metadata` → LLMUsage（缓存按包含式减出，口径与 OpenAI 路径一致）。
+
+    `prompt_token_count` **含**缓存命中（`cached_content_token_count`）。把它直接当
+    `input_tokens` 是双重计数：命中那部分同时还会进 `cache_read_input_tokens`，于是
+    同一份用量在 Gemini 上比在 OpenAI 上记高一大截，跨 provider 的命中率与成本对比失真
+    （约束 78「缓存口径归一化」的 Google 行）。Google 不报缓存写入，按 0；
+    它也不报推理 token 单列。
+    """
+    if raw is None:
+        return None
+    prompt = _usage_int(getattr(raw, "prompt_token_count", None))
+    completion = _usage_int(getattr(raw, "candidates_token_count", None))
+    cached = _usage_int(getattr(raw, "cached_content_token_count", None))
+    return LLMUsage(
+        input_tokens=max(prompt - cached, 0),
+        output_tokens=completion,
+        cache_creation_input_tokens=0,
+        cache_read_input_tokens=cached,
+    )
 
 
 @dataclass

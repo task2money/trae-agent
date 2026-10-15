@@ -4,6 +4,7 @@
 """Google Gemini API client wrapper with tool integration."""
 
 import json
+import time
 import traceback
 import uuid
 from typing import override
@@ -14,7 +15,13 @@ from google.genai import types
 from trae_agent.tools.base import Tool, ToolCall, ToolResult
 from trae_agent.utils.config import ModelConfig
 from trae_agent.utils.llm_clients.base_client import BaseLLMClient
-from trae_agent.utils.llm_clients.llm_basics import LLMMessage, LLMResponse, LLMUsage
+from trae_agent.utils.llm_clients.llm_basics import (
+    LLMMessage,
+    LLMResponse,
+    usage_from_google_usage,
+    usage_log_fields,
+)
+from trae_agent.utils.llm_clients.llm_logger import LLMLogger
 from trae_agent.utils.llm_clients.retry_utils import retry_with
 
 
@@ -27,6 +34,7 @@ class GoogleClient(BaseLLMClient):
         self.client = genai.Client(api_key=self.api_key)
         self.message_history: list[types.Content] = []
         self.system_instruction: str | None = None
+        self.logger = LLMLogger(model_config.model)
 
     @override
     def set_chat_history(self, messages: list[LLMMessage]) -> None:
@@ -97,7 +105,9 @@ class GoogleClient(BaseLLMClient):
             provider_name="Google Gemini",
             max_retries=model_config.max_retries,
         )
+        start_time = time.time()
         response = retry_decorator(model_config, current_chat_contents, generation_config)
+        latency = time.time() - start_time
 
         content = ""
         tool_calls: list[ToolCall] = []
@@ -134,14 +144,7 @@ class GoogleClient(BaseLLMClient):
         if current_system_instruction:
             self.system_instruction = current_system_instruction
 
-        usage = None
-        if response.usage_metadata:
-            usage = LLMUsage(
-                input_tokens=response.usage_metadata.prompt_token_count or 0,
-                output_tokens=response.usage_metadata.candidates_token_count or 0,
-                cache_read_input_tokens=response.usage_metadata.cached_content_token_count or 0,
-                cache_creation_input_tokens=0,
-            )
+        usage = usage_from_google_usage(response.usage_metadata)
 
         llm_response = LLMResponse(
             content=content,
@@ -155,6 +158,19 @@ class GoogleClient(BaseLLMClient):
             if response.candidates
             else "UNKNOWN",
             tool_calls=tool_calls if len(tool_calls) > 0 else None,
+        )
+
+        # 落调用日志：此前本客户端完全不写 response 行（与 openai_client 的 Responses 路径
+        # 同属「调用日志里一片空白」的缺口），token 账只剩 trajectory 文件能看。
+        self.logger.log_response(
+            response={
+                "content": llm_response.content,
+                "tool_calls": [tc.__dict__ for tc in tool_calls] if tool_calls else None,
+                "finish_reason": llm_response.finish_reason,
+                "model": llm_response.model,
+            },
+            usage=usage_log_fields(llm_response.usage),
+            latency=latency,
         )
 
         if self.trajectory_recorder:

@@ -4,6 +4,7 @@
 """OpenAI API client wrapper with tool integration."""
 
 import json
+import time
 import urllib.parse
 from typing import override
 
@@ -26,7 +27,9 @@ from trae_agent.utils.llm_clients.llm_basics import (
     LLMMessage,
     LLMResponse,
     usage_from_openai_usage,
+    usage_log_fields,
 )
+from trae_agent.utils.llm_clients.llm_logger import LLMLogger
 from trae_agent.utils.llm_clients.openai_compatible_base import (
     OpenAICompatibleClient,
     ProviderConfig,
@@ -111,6 +114,7 @@ class OpenAIClient(BaseLLMClient):
             api_key=self.api_key, base_url=self.base_url, http_client=http_client
         )
         self.message_history: ResponseInputParam = []
+        self.logger = LLMLogger(model_config.model)
 
     @override
     def set_chat_history(self, messages: list[LLMMessage]) -> None:
@@ -174,7 +178,9 @@ class OpenAIClient(BaseLLMClient):
             provider_name="OpenAI",
             max_retries=model_config.max_retries,
         )
+        start_time = time.time()
         response = retry_decorator(api_call_input, model_config, tool_schemas)
+        latency = time.time() - start_time
 
         content = ""
         tool_calls: list[ToolCall] = []
@@ -219,6 +225,19 @@ class OpenAIClient(BaseLLMClient):
             model=response.model,
             finish_reason=response.status,
             tool_calls=tool_calls if len(tool_calls) > 0 else None,
+        )
+
+        # 落调用日志：此前本路径（Responses API）完全不写 response 行，token 账只剩
+        # trajectory 文件能看（同 google_client 的缺口）。
+        self.logger.log_response(
+            response={
+                "content": llm_response.content,
+                "tool_calls": [tc.__dict__ for tc in tool_calls] if tool_calls else None,
+                "finish_reason": llm_response.finish_reason,
+                "model": llm_response.model,
+            },
+            usage=usage_log_fields(llm_response.usage),
+            latency=latency,
         )
 
         # Record trajectory if recorder is available

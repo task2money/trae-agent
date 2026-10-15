@@ -23,7 +23,7 @@ from openai.types.responses.response_input_param import FunctionCallOutput
 from trae_agent.tools.base import Tool, ToolCall, ToolResult
 from trae_agent.utils.config import ModelConfig
 from trae_agent.utils.llm_clients.base_client import BaseLLMClient
-from trae_agent.utils.llm_clients.llm_basics import LLMMessage, LLMResponse
+from trae_agent.utils.llm_clients.llm_basics import LLMMessage, LLMResponse, usage_log_fields
 from trae_agent.utils.llm_clients.llm_logger import LLMLogger
 from trae_agent.utils.llm_clients.retry_utils import retry_with
 
@@ -167,7 +167,10 @@ class OllamaClient(BaseLLMClient):
             }
             self.logger.log_response(
                 response=response_dict,
-                usage=None,
+                # 本地 ollama 无上游 key、不计费（约束 78 豁免范围），usage 恒 None；仍走
+                # usage_log_fields 让日志行结构与其它 provider 一致（全零键而非缺键），
+                # 「这个 provider 没账」与「这个字段没写」在消费侧才分得开。
+                usage=usage_log_fields(llm_response.usage),
                 latency=latency,
             )
 
