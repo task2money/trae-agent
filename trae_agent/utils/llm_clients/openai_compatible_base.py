@@ -28,7 +28,12 @@ from openai.types.shared_params.function_definition import FunctionDefinition
 from trae_agent.tools.base import Tool, ToolCall
 from trae_agent.utils.config import ModelConfig
 from trae_agent.utils.llm_clients.base_client import BaseLLMClient
-from trae_agent.utils.llm_clients.llm_basics import LLMMessage, LLMResponse, LLMUsage
+from trae_agent.utils.llm_clients.llm_basics import (
+    LLMMessage,
+    LLMResponse,
+    usage_from_openai_usage,
+    usage_log_fields,
+)
 from trae_agent.utils.llm_clients.llm_logger import LLMLogger
 from trae_agent.utils.llm_clients.retry_utils import retry_with
 from trae_agent.utils.llm_clients.tool_call_json import parse_tool_call_arguments
@@ -196,14 +201,7 @@ class OpenAICompatibleClient(BaseLLMClient):
                 tool_calls=tool_calls,
                 finish_reason=choice.finish_reason,
                 model=response.model,
-                usage=(
-                    LLMUsage(
-                        input_tokens=response.usage.prompt_tokens or 0,
-                        output_tokens=response.usage.completion_tokens or 0,
-                    )
-                    if response.usage
-                    else None
-                ),
+                usage=usage_from_openai_usage(response.usage),
             )
 
             # Update message history
@@ -239,10 +237,7 @@ class OpenAICompatibleClient(BaseLLMClient):
                 "finish_reason": llm_response.finish_reason,
                 "model": llm_response.model,
             }
-            usage_dict = {
-                "input_tokens": llm_response.usage.input_tokens if llm_response.usage else 0,
-                "output_tokens": llm_response.usage.output_tokens if llm_response.usage else 0,
-            }
+            usage_dict = usage_log_fields(llm_response.usage)
             self.logger.log_response(
                 response=response_dict,
                 usage=usage_dict,

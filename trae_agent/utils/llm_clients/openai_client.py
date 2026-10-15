@@ -22,7 +22,11 @@ from openai.types.responses.response_input_param import FunctionCallOutput
 from trae_agent.tools.base import Tool, ToolCall, ToolResult
 from trae_agent.utils.config import ModelConfig
 from trae_agent.utils.llm_clients.base_client import BaseLLMClient
-from trae_agent.utils.llm_clients.llm_basics import LLMMessage, LLMResponse, LLMUsage
+from trae_agent.utils.llm_clients.llm_basics import (
+    LLMMessage,
+    LLMResponse,
+    usage_from_openai_usage,
+)
 from trae_agent.utils.llm_clients.openai_compatible_base import (
     OpenAICompatibleClient,
     ProviderConfig,
@@ -207,14 +211,7 @@ class OpenAIClient(BaseLLMClient):
                 EasyInputMessageParam(content=content, role="assistant", type="message")
             )
 
-        usage = None
-        if response.usage:
-            usage = LLMUsage(
-                input_tokens=response.usage.input_tokens or 0,
-                output_tokens=response.usage.output_tokens or 0,
-                cache_read_input_tokens=response.usage.input_tokens_details.cached_tokens or 0,
-                reasoning_tokens=response.usage.output_tokens_details.reasoning_tokens or 0,
-            )
+        usage = usage_from_openai_usage(response.usage)
 
         llm_response = LLMResponse(
             content=content,
