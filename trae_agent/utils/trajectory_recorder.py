@@ -17,6 +17,7 @@ from typing import Any
 
 from trae_agent.tools.base import ToolCall, ToolResult
 from trae_agent.utils.llm_clients.llm_basics import LLMMessage, LLMResponse
+from trae_agent.utils.trace_context import resolve_trace_identity
 
 
 def _truncate_summary_line(text: str, max_len: int = 180) -> str:
@@ -73,12 +74,19 @@ def compute_step_delivery_summary(
 class TrajectoryRecorder:
     """Records trajectory data for agent execution and LLM interactions."""
 
-    def __init__(self, trajectory_path: str | None = None):
+    def __init__(self, trajectory_path: str | None = None, trace_id: str | None = None):
         """Initialize trajectory recorder.
 
         Args:
             trajectory_path: Path to save trajectory file. If None, generates default path.
+            trace_id: Correlation id injected by the caller/control plane. When None,
+                falls back to ``TRAE_TRACE_ID`` or a freshly generated id.
         """
+        identity = resolve_trace_identity(trace_id=trace_id)
+        self.trace_id: str = identity["trace_id"]
+        self.tenant_id: str = identity["tenant_id"]
+        self.task_id: str = identity["task_id"]
+
         if trajectory_path is None:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             # Use a hidden directory to avoid agents treating trajectory files as task inputs.
@@ -91,6 +99,9 @@ class TrajectoryRecorder:
             print("Error creating trajectory directory. Trajectories may not be properly saved.")
 
         self.trajectory_data: dict[str, Any] = {
+            "trace_id": self.trace_id,
+            "tenant_id": self.tenant_id,
+            "task_id": self.task_id,
             "task": "",
             "start_time": "",
             "end_time": "",
@@ -105,7 +116,16 @@ class TrajectoryRecorder:
         }
         self._start_time: datetime | None = None
 
-    def start_recording(self, task: str, provider: str, model: str, max_steps: int) -> None:
+    def start_recording(
+        self,
+        task: str,
+        provider: str,
+        model: str,
+        max_steps: int,
+        trace_id: str | None = None,
+        tenant_id: str | None = None,
+        task_id: str | None = None,
+    ) -> None:
         """Start recording a new trajectory.
 
         Args:
@@ -113,10 +133,24 @@ class TrajectoryRecorder:
             provider: LLM provider being used
             model: Model name being used
             max_steps: Maximum number of steps allowed
+            trace_id: Explicit correlation id for this run (overrides constructor/env)
+            tenant_id: Tenant identifier, when the caller knows it
+            task_id: Stable task identifier, when the caller knows it
         """
+        identity = resolve_trace_identity(
+            trace_id=trace_id or self.trace_id or None,
+            tenant_id=tenant_id or self.tenant_id or None,
+            task_id=task_id or self.task_id or None,
+        )
+        self.trace_id = identity["trace_id"]
+        self.tenant_id = identity["tenant_id"]
+        self.task_id = identity["task_id"]
         self._start_time = datetime.now()
         self.trajectory_data.update(
             {
+                "trace_id": self.trace_id,
+                "tenant_id": self.tenant_id,
+                "task_id": self.task_id,
                 "task": task,
                 "start_time": self._start_time.isoformat(),
                 "provider": provider,
@@ -135,6 +169,9 @@ class TrajectoryRecorder:
         provider: str,
         model: str,
         tools: list[Any] | None = None,
+        latency_ms: float | None = None,
+        http_status: int | None = None,
+        credential_ref: str | None = None,
     ) -> None:
         """Record an LLM interaction.
 
@@ -144,8 +181,45 @@ class TrajectoryRecorder:
             provider: LLM provider used
             model: Model used
             tools: Tools available during the interaction
+            latency_ms: Wall-clock duration of the provider call (unknown → 0)
+            http_status: HTTP status of the provider call (SDK 未暴露时 → 0)
+            credential_ref: `sha256:<16>` 凭据标识（禁止明文；无 key 时为空）
         """
+        usage = response.usage
+        usage_values = {
+            "input_tokens": usage.input_tokens if usage else 0,
+            "output_tokens": usage.output_tokens if usage else 0,
+            "cache_creation_input_tokens": getattr(usage, "cache_creation_input_tokens", None)
+            if usage
+            else None,
+            "cache_read_input_tokens": getattr(usage, "cache_read_input_tokens", None)
+            if usage
+            else None,
+            "reasoning_tokens": getattr(usage, "reasoning_tokens", None) if usage else None,
+        }
+        # 契约命名（约束 78 A–D 表）与 trajectory 既有命名并存，避免下游 join 时二次换算。
+        usage_values["cache_creation_tokens"] = usage_values["cache_creation_input_tokens"]
+        usage_values["cache_read_tokens"] = usage_values["cache_read_input_tokens"]
+
+        sequence = len(self.trajectory_data["llm_interactions"]) + 1
+        audit = {
+            "agent_source": os.environ.get("TRAE_AGENT_SOURCE", "").strip() or "unknown",
+            "credential_ref": credential_ref or "",
+            "provider": provider,
+            "model": model,
+            "tenant_id": self.tenant_id,
+            "task_id": self.task_id,
+            "outcome": "success",
+            "http_status": http_status if http_status is not None else 0,
+            "latency_ms": latency_ms if latency_ms is not None else 0,
+            "usage_ok": usage is not None,
+            "usage_schema": "trae_exclusive_v1",
+            "idempotency_key": f"trae-{self.trace_id}-{sequence}",
+            "created_at": datetime.now().isoformat(),
+        }
+
         interaction = {
+            "trace_id": self.trace_id,
             "timestamp": datetime.now().isoformat(),
             "provider": provider,
             "model": model,
@@ -154,27 +228,12 @@ class TrajectoryRecorder:
                 "content": response.content,
                 "model": response.model,
                 "finish_reason": response.finish_reason,
-                "usage": {
-                    "input_tokens": response.usage.input_tokens if response.usage else 0,
-                    "output_tokens": response.usage.output_tokens if response.usage else 0,
-                    "cache_creation_input_tokens": getattr(
-                        response.usage, "cache_creation_input_tokens", None
-                    )
-                    if response.usage
-                    else None,
-                    "cache_read_input_tokens": getattr(
-                        response.usage, "cache_read_input_tokens", None
-                    )
-                    if response.usage
-                    else None,
-                    "reasoning_tokens": getattr(response.usage, "reasoning_tokens", None)
-                    if response.usage
-                    else None,
-                },
+                "usage": usage_values,
                 "tool_calls": [self._serialize_tool_call(tc) for tc in response.tool_calls]
                 if response.tool_calls
                 else None,
             },
+            "audit": audit,
             "tools_available": [tool.name for tool in tools] if tools else None,
         }
 

@@ -181,6 +181,8 @@ class OllamaClient(BaseLLMClient):
                     provider="ollama",
                     model=model_config.model,
                     tools=tools,
+                    latency_ms=round(latency * 1000, 3),
+                    credential_ref=self.credential_ref(),
                 )
 
             return llm_response

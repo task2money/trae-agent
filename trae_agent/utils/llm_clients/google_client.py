@@ -48,6 +48,17 @@ class GoogleClient(BaseLLMClient):
         generation_config: types.GenerateContentConfig,
     ) -> types.GenerateContentResponse:
         """Create a response using Google Gemini API. This method will be decorated with retry logic."""
+        trace_headers = self.trace_headers()
+        if trace_headers:
+            existing = generation_config.http_options
+            http_options = (
+                types.HttpOptions(headers=trace_headers)
+                if existing is None
+                else existing.model_copy(
+                    update={"headers": {**(existing.headers or {}), **trace_headers}}
+                )
+            )
+            generation_config = generation_config.model_copy(update={"http_options": http_options})
         return self.client.models.generate_content(  # pyright: ignore[reportUnknownMemberType]
             model=model_config.model,
             contents=current_chat_contents,
@@ -180,6 +191,8 @@ class GoogleClient(BaseLLMClient):
                 provider="google",
                 model=model_config.model,
                 tools=tools,
+                latency_ms=round(latency * 1000, 3),
+                credential_ref=self.credential_ref(),
             )
 
         return llm_response

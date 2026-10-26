@@ -54,7 +54,9 @@ def should_use_openai_responses_api(base_url: str | None) -> bool:
         return False
     if not host:
         return False
-    return host == "api.openai.com" or host.endswith(".openai.com") or host.endswith(".openai.com.cn")
+    return (
+        host == "api.openai.com" or host.endswith(".openai.com") or host.endswith(".openai.com.cn")
+    )
 
 
 class OpenAICompatProvider(ProviderConfig):
@@ -139,6 +141,7 @@ class OpenAIClient(BaseLLMClient):
             else openai.NOT_GIVEN,
             top_p=model_config.top_p,
             max_output_tokens=model_config.max_tokens,
+            extra_headers=self.trace_headers() or None,
         )
 
     @override
@@ -248,6 +251,8 @@ class OpenAIClient(BaseLLMClient):
                 provider="openai",
                 model=model_config.model,
                 tools=tools,
+                latency_ms=round(latency * 1000, 3),
+                credential_ref=self.credential_ref(),
             )
 
         return llm_response

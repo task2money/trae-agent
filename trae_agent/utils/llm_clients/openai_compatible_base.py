@@ -153,8 +153,9 @@ class OpenAICompatibleClient(BaseLLMClient):
                 for tool in tools
             ]
 
-        # Get provider-specific extra headers
-        extra_headers = self.provider_config.get_extra_headers()
+        # Provider-specific headers + trace correlation (don't drop either)
+        extra_headers = dict(self.provider_config.get_extra_headers() or {})
+        extra_headers.update(self.trace_headers())
 
         # Log the request
         model_config_dict = {
@@ -251,6 +252,8 @@ class OpenAICompatibleClient(BaseLLMClient):
                     provider=self.provider_config.get_provider_name(),
                     model=model_config.model,
                     tools=tools,
+                    latency_ms=round(latency * 1000, 3),
+                    credential_ref=self.credential_ref(),
                 )
 
             return llm_response

@@ -61,6 +61,7 @@ class AnthropicClient(BaseLLMClient):
             temperature=model_config.temperature,
             top_p=model_config.top_p,
             top_k=model_config.top_k,
+            extra_headers=self.trace_headers() or None,
         )
 
     @override
@@ -194,6 +195,8 @@ class AnthropicClient(BaseLLMClient):
                     provider="anthropic",
                     model=model_config.model,
                     tools=tools,
+                    latency_ms=round(latency * 1000, 3),
+                    credential_ref=self.credential_ref(),
                 )
 
             return llm_response

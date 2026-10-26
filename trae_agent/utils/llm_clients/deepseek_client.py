@@ -199,6 +199,7 @@ class DeepSeekClient(BaseLLMClient):
             temperature=model_config.temperature,
             top_p=model_config.top_p,
             max_tokens=model_config.max_tokens,
+            extra_headers=self.trace_headers() or None,
         )
 
     @override
@@ -371,6 +372,8 @@ class DeepSeekClient(BaseLLMClient):
                     provider="deepseek",
                     model=model_config.model,
                     tools=tools,
+                    latency_ms=round(latency * 1000, 3),
+                    credential_ref=self.credential_ref(),
                 )
 
             return llm_response
