@@ -37,7 +37,11 @@ FIX_KEYWORD_RE='(^|[^[:alnum:]_])(fix(es|ed)?|bug|bugfix|hotfix)([^[:alnum:]_]|$
 SOURCE_SUFFIX_RE='\.(go|py|js|jsx|ts|tsx|vue)$'
 NON_UNIT_DIR_SEGMENTS='node_modules|\.git|vendor|venv|\.venv|site-packages|__pycache__|playwright|e2e|e2e-tests|end_to_end_tests|testdata|mocks'
 NON_UNIT_NAME_MARKERS='\.playwright\.test\.|\.e2e\.test\.|\.integration\.test\.|\.spec\.e2e\.'
-UNIT_JS_RE='\.(unit\.)?(test|spec)\.(js|jsx|ts|tsx)$'
+# .mjs / .cjs 也是本仓 JS 单测的常见扩展名（taskFE `tests/helpers/*.test.mjs` 与
+# 随机抽测的 rt_js_collect_files 都收它们），漏掉会让「源码修复 + .test.mjs 回归」
+# 被误判为无单测而阻断——假红会把人推向 no-test: 或改名，反而削弱门禁。
+# 根仓 Python 版 check_bug_fix_unit_tests.py 早已含 mjs|cjs，这里对齐。
+UNIT_JS_RE='\.(unit\.)?(test|spec)\.(js|jsx|ts|tsx|mjs|cjs)$'
 
 is_bug_fix_message() {
   local first="$1"
@@ -63,7 +67,9 @@ is_unit_test_file() {
   if [[ "$name" == *.py ]] && { [[ "$name" == test_* ]] || [[ "$name" == *_test.py ]]; }; then
     return 0
   fi
-  if [[ "$name" =~ \.(unit\.)?(test|spec)\.(js|jsx|ts|tsx)$ ]]; then return 0; fi
+  # 用常量而不是再写一份字面量：此前这里写死 `...\.(js|jsx|ts|tsx)$`，上面的
+  # UNIT_JS_RE 成了**死变量**——改常量毫无作用，.mjs 单测永远认不出来。
+  if [[ "$name" =~ $UNIT_JS_RE ]]; then return 0; fi
   return 1
 }
 
@@ -234,6 +240,9 @@ self_test() {
   check_case 0 "integration 用例同样豁免" "fix: 修正集成用例" $'src/db.integration.test.ts'
   check_case 1 "e2e 豁免不覆盖同提交的真实源码" "fix: 修正 e2e 并同步按钮状态" $'e2e/foo.playwright.test.js\nsrc/Button.tsx'
   check_case 0 "feat + fix 关键字但非 fix 前缀" "feat: fix traceId propagation" $'app/trace.go'
+  # .mjs/.cjs 单测（与根仓 Python 版对齐；taskFE tests/helpers 普遍用 .test.mjs）
+  check_case 0 "fix + 同名 .test.mjs 通过" "fix: 归一化监听地址" $'tests/helper.js\ntests/helper.test.mjs'
+  check_case 0 "fix + .unit.test.cjs 通过" "fix: 表格列宽漂移" $'app/col.js\napp/col.unit.test.cjs'
 
   echo ""
   if [ "$failures" -gt 0 ]; then
