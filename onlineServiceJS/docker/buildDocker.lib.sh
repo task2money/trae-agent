@@ -54,7 +54,7 @@ ensure_commit_git_tag() {
   if git -C "$REPO_ROOT" tag "$candidate" >/dev/null 2>&1; then
     echo "[buildDocker.sh] 已按当前时间新建 git tag: $candidate" >&2
   else
-    echo "[buildDocker.sh] 警告: 创建 git tag 失败: $candidate（仅作为 docker tag 使用）" >&2
+    echo "[buildDocker.sh] 警告: 创建 git tag 失败: ${candidate}（仅作为 docker tag 使用）" >&2
   fi
   printf '%s' "$candidate"
 }
@@ -109,7 +109,7 @@ assert_required_push_platforms() {
   IFS="$_oifs"
   if [[ "${#missing[@]}" -gt 0 ]]; then
     echo "[buildDocker.sh] 错误: 推送模式要求同时构建并推送以下架构: $required_csv" >&2
-    echo "[buildDocker.sh] 当前 DOCKER_PLATFORMS=$actual，缺失: ${missing[*]}" >&2
+    echo "[buildDocker.sh] 当前 DOCKER_PLATFORMS=${actual}，缺失: ${missing[*]}" >&2
     echo "[buildDocker.sh] 如需覆盖默认要求，请显式设置 REQUIRED_PUSH_PLATFORMS" >&2
     exit 1
   fi
@@ -187,7 +187,7 @@ ensure_registry_push_auth() {
   fi
 
   if [[ "$auto" == "0" || "$auto" == "false" || "$auto" == "FALSE" || "$auto" == "off" ]]; then
-    echo "[buildDocker.sh] 错误: 未登录 $host。请先执行: docker login $host" >&2
+    echo "[buildDocker.sh] 错误: 未登录 ${host}。请先执行: docker login $host" >&2
     echo "[buildDocker.sh] 说明: 阿里云杭州/青岛等区域 registry 主机名不同，登录态不共享。" >&2
     return 1
   fi
@@ -235,7 +235,7 @@ _user, pw = raw.split(":", 1)
 sys.stdout.buffer.write(pw.encode())
 ' | docker login "$host" -u "$(cat "$user_file")" --password-stdin >/dev/null 2>&1; then
         rm -f "$user_file"
-        echo "[buildDocker.sh] 推送鉴权: 已自动登录 $host（凭证来自 $donor）" >&2
+        echo "[buildDocker.sh] 推送鉴权: 已自动登录 ${host}（凭证来自 ${donor}）" >&2
         return 0
       else
         rm -f "$user_file"
@@ -325,7 +325,7 @@ ensure_docker_base_image() {
       fi
     done
     RESOLVED_BASE_IMAGE="$default_ref"
-    echo "[buildDocker.sh] 远程拉取失败，改用本机已有 $default_ref（若仍失败请设 DOCKER_BASE_IMAGE）" >&2
+    echo "[buildDocker.sh] 远程拉取失败，改用本机已有 ${default_ref}（若仍失败请设 DOCKER_BASE_IMAGE）" >&2
     return 0
   fi
 
