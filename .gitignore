@@ -21,6 +21,10 @@ eggs/
 .eggs/
 lib/
 lib64/
+# git hooks library is checked in (rendered by deploy_repo_random_precommit.sh);
+# the Python template's `lib/` rule must not swallow it.
+!.githooks/lib/
+!.githooks/lib/**
 parts/
 sdist/
 var/
