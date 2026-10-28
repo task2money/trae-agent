@@ -50,7 +50,7 @@ case "$(printf '%s' "${_raw_platforms}" | tr '[:upper:]' '[:lower:]')" in
 esac
 unset _raw_platforms
 DOCKER_IMAGE_TAG_SCHEME="${DOCKER_IMAGE_TAG_SCHEME:-arch_timestamp}"
-DOCKER_REGISTRY_REPOSITORY="${DOCKER_REGISTRY_REPOSITORY:-crpi-072yxtdg2bzlynb0.cn-hongkong.personal.cr.aliyuncs.com/daydaymoney/task2app-trae}"
+DOCKER_REGISTRY_REPOSITORY="${DOCKER_REGISTRY_REPOSITORY:-crpi-072yxtdg2bzlynb0.cn-hongkong.personal.cr.aliyuncs.com/daydaymoney/trae-ide}"
 REQUIRED_PUSH_PLATFORMS="${REQUIRED_PUSH_PLATFORMS:-$PLATFORMS}"
 
 for arg in "$@"; do
