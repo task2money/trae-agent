@@ -101,7 +101,9 @@ BUILD_ARGS+=( --build-arg "SKIP_INTERNAL_APT_MIRROR=${SKIP_INT}" )
 [[ -n "${CODE_SERVER_VERSION:-}" ]] && BUILD_ARGS+=( --build-arg "CODE_SERVER_VERSION=${CODE_SERVER_VERSION}" )
 [[ -n "${NPM_REGISTRY:-}" ]] && BUILD_ARGS+=( --build-arg "NPM_REGISTRY=${NPM_REGISTRY}" )
 
-BX=( run_docker_buildx build )
+# 关闭 buildx 默认的 provenance/SBOM 证明清单：阿里云个人版 ACR 会以
+# `unknown manifest class for application/vnd.oci.empty.v1+json` 拒绝推送。
+BX=( run_docker_buildx build --provenance=false --sbom=false )
 [[ -n "${DOCKER_BUILDX_BUILDER:-}" ]] && BX+=( --builder "${DOCKER_BUILDX_BUILDER}" )
 
 # 推送进度：--progress=plain + docker/buildDocker_push_progress.py（勿把 heredoc 接到 python stdin）。
