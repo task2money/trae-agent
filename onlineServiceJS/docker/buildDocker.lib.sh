@@ -246,7 +246,7 @@ sys.stdout.buffer.write(pw.encode())
 
   echo "[buildDocker.sh] 错误: 未登录推送目标 registry: $host" >&2
   echo "[buildDocker.sh] 请先执行: docker login $host" >&2
-  echo "[buildDocker.sh] 说明: 仅登录 registry.cn-hangzhou.aliyuncs.com 不能推送到 registry.cn-qingdao.aliyuncs.com（insufficient_scope）。" >&2
+  echo "[buildDocker.sh] 说明: 登录其它区域/实例的 registry 不等于获得目标仓库推送权限（insufficient_scope），须 docker login 目标主机。" >&2
   return 1
 }
 

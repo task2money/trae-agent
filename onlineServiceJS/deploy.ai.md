@@ -8,7 +8,8 @@
 DOCKER_PUSH=1 ./buildDocker.sh
 ```
 
-默认构建并推送 **linux/amd64 (x86)** 镜像到 `registry.cn-qingdao.aliyuncs.com/ruandao/task2app-trae`。
+默认构建并推送 **linux/amd64 (x86)** 镜像到
+`crpi-072yxtdg2bzlynb0.cn-hongkong.personal.cr.aliyuncs.com/daydaymoney/trae-ide`。
 
 ## 变体
 
