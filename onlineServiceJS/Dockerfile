@@ -90,6 +90,12 @@ RUN set -eux; \
 ARG BASE_IMAGE=ubuntu:24.04
 FROM ${BASE_IMAGE}
 
+# 归属标记（OPT-20261028-017）：run.sh 反复重建 trae-online-js:local 时，旧镜像
+# 会失去标签变成 <none>，无法从仓库名判断归属。带此标签的悬空镜像允许
+# `trae_image_retention.sh prune --dangling-label` 定向回收，其它项目的悬空
+# 镜像不受影响（硬约束 83 仍禁止 docker image prune -a）。
+LABEL org.daydaymoney.trae-agent="true"
+
 ARG DEBIAN_FRONTEND=noninteractive
 ARG ENABLE_CODE_SERVER=1
 # 与 code-server  tarball 架构一致；未传时以镜像内 dpkg 为准（避免 arm64 构建误用默认 amd64 的 Node 二进制）

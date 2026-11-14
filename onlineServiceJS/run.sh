@@ -20,6 +20,9 @@
 #   TRAE_ONLINE_JS_DOCKER_REBUILD=1  强制重新 docker build（忽略指纹）
 #   TRAE_ONLINE_JS_DOCKER_STAMP_FILE=路径  覆盖默认指纹文件（见 onlineServiceJS/.last-docker-image-context.sha256）
 # 仅当 trae-agent 下除 onlineProject/、onlineProject_state/、.git/ 外文件有变更时才重新 build；否则复用已有镜像。
+# 重建留下的旧镜像会变成 <none>，但带 LABEL org.daydaymoney.trae-agent="true"（OPT-20261028-017）。
+# 需要回收时在 daydaymoney meta 仓根显式执行（默认不自动删悬空镜像，见约束 83）：
+#   bash scripts/lib/trae_image_retention.sh prune --dangling-label org.daydaymoney.trae-agent=true --dry-run
 # 本地直接跑 Node（不经过 Docker）：
 #   TRAE_ONLINE_JS_DOCKER=0 ./run.sh
 #
