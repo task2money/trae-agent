@@ -24,10 +24,25 @@
 # conf.example/releases.yaml；pre-commit framework 的 auto-fix 会重新暂存生成物），
 # 一律判失败会把每一次正常提交都拦下。meta 的「并发裹挟」问题需要另一种机制，
 # 不能靠把这条判据复制过去解决（OPT-20261014-013 的 Action(2) 因此未做）。
+#
+# OPT-20261105-005: 路径限定提交（git commit -- <paths>）用**临时索引**，git 通过
+# GIT_INDEX_FILE 把它的绝对路径导出给钩子；此时钩子开头快照只含本次提交的路径。
+# random_test_runner 的 rt_scrub_git_env 会在主 shell unset GIT_INDEX_FILE，
+# 收尾若改读真实索引，其他会话已暂存的条目全被算成「门禁期间追加」——多会话
+# 同时有暂存时，每个路径限定提交都必然失败（2026-11-05 实测三个会话互相锁死）。
+# 修法：source 时记住当时生效的索引文件，收尾对**同一个索引**做快照与比对。
+# 普通提交（GIT_INDEX_FILE 未导出或即真实索引）行为不变，仍然拦截并发 git add。
+RT_STAGED_GUARD_INDEX_FILE="${GIT_INDEX_FILE:-}"
 
 # 一次索引快照：排序去重，供集合比对使用（LC_ALL=C 保证两次排序口径一致）。
+# 显式带上调用时捕获的索引，避免 rt_scrub_git_env 之后漂移到真实索引。
 rt_staged_guard_snapshot() {
-  git diff --cached --name-only 2>/dev/null | grep -v '^$' | LC_ALL=C sort -u || true
+  if [ -n "${RT_STAGED_GUARD_INDEX_FILE:-}" ]; then
+    GIT_INDEX_FILE="$RT_STAGED_GUARD_INDEX_FILE" \
+      git diff --cached --name-only 2>/dev/null | grep -v '^$' | LC_ALL=C sort -u || true
+  else
+    git diff --cached --name-only 2>/dev/null | grep -v '^$' | LC_ALL=C sort -u || true
+  fi
 }
 
 rt_assert_staged_preserved() {
@@ -40,7 +55,8 @@ rt_assert_staged_preserved() {
     ''|*[!0-9]*) start=0 ;;
   esac
   local now
-  now="$(git diff --cached --name-only 2>/dev/null | wc -l | tr -d '[:space:]')"
+  # 与开头快照同口径：路径限定提交必须继续读临时索引（OPT-20261105-005）。
+  now="$(rt_staged_guard_snapshot | wc -l | tr -d '[:space:]')"
   case "$now" in
     ''|*[!0-9]*) now=0 ;;
   esac
