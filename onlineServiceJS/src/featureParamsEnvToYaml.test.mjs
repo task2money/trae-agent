@@ -51,7 +51,7 @@ test('featureParamsEnvToYaml lowercases provider identifiers', () => {
     TASK_AGENT_MODEL: 'deepseek-v4-pro',
     TASK_AGENT_MODEL_PROVIDER: 'deepSeek',
     TASK_AGENT_MAX_STEPS: '200',
-    TASK_SUMMARY_MODEL: 'deepseek-v4-flash',
+    TASK_SUMMARY_MODEL: 'deepseek-flash',
     TASK_SUMMARY_MODEL_PROVIDER: 'deepSeek',
   });
   assert.match(yaml, /    deepseek:/);
@@ -85,11 +85,11 @@ test('normalizeDeepSeekBaseUrl keeps operator-typed paths and repairs concat onl
 test('featureParamsEnvToYaml keeps deepseek anthropic base_url', () => {
   const yaml = featureParamsEnvToYaml({
     TASK_LLM_PROVIDERS_JSON:
-      '[{"provider":"deepseek","api_key":"sk","base_url":"https://api.deepseek.com/anthropic","supported_models":["deepseek-v4-flash"]}]',
-    TASK_AGENT_MODEL: 'deepseek-v4-flash',
+      '[{"provider":"deepseek","api_key":"sk","base_url":"https://api.deepseek.com/anthropic","supported_models":["deepseek-flash"]}]',
+    TASK_AGENT_MODEL: 'deepseek-flash',
     TASK_AGENT_MODEL_PROVIDER: 'deepseek',
     TASK_AGENT_MAX_STEPS: '200',
-    TASK_SUMMARY_MODEL: 'deepseek-v4-flash',
+    TASK_SUMMARY_MODEL: 'deepseek-flash',
     TASK_SUMMARY_MODEL_PROVIDER: 'deepseek',
   });
   assert.match(yaml, /base_url: https:\/\/api\.deepseek\.com\/anthropic/);
