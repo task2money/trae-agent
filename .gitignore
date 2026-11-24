@@ -171,3 +171,6 @@ onlineServiceJS/docker/code-server/*.tar.gz
 !.env.example
 !.env.sample
 !.env.template
+
+# 本地运行时状态（commit 队列等），不入库
+.runall/
